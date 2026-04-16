@@ -1,26 +1,210 @@
 @import "tailwindcss";
 
+/* Brand: teal primary, coral/red accent — Identity Camp / Pastor’s Corner palette */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4faf9;
+  --foreground: #0f1715;
+  --primary: #3d8a86;
+  --primary-foreground: #ffffff;
+  --accent: #e63946;
+  --accent-foreground: #ffffff;
+  --muted: #e3f0ed;
+  --muted-foreground: #3d4a47;
+  --border: #c5ddd8;
+  --card: #ffffff;
+  --card-foreground: #0f1715;
+  --ring: #3d8a86;
+}
+
+.dark {
+  /* Lifted surfaces (not flat black) so lists/cards read clearly */
+  --background: #0e1614;
+  --foreground: #e8f0ed;
+  --primary: #5ab0a8;
+  --primary-foreground: #051010;
+  --accent: #f94c4c;
+  --accent-foreground: #0a0a0a;
+  --muted: #1c2b28;
+  --muted-foreground: #b8cac5;
+  --border: #35514a;
+  --card: #1a2825;
+  --card-foreground: #e8f0ed;
+  --ring: #5ab0a8;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-montserrat), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-bebas), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+}
+
+main h1,
+main h2,
+main h3 {
+  font-family: var(--font-heading);
+  letter-spacing: 0.03em;
+}
+
+@utility font-heading {
+  font-family: var(--font-heading);
+}
+
+@utility ui-card {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+}
+
+@utility ui-card-muted {
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+
+@utility ui-field {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  transition: border-color 150ms ease, box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+
+.ui-field::placeholder {
+  color: var(--muted-foreground);
+}
+
+.ui-field:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
+}
+
+@utility ui-button {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 1px solid transparent;
+  transition: transform 150ms ease, box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+
+.ui-button:hover {
+  background: color-mix(in srgb, var(--primary) 88%, #ffffff);
+}
+
+.ui-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+@utility ui-button-secondary {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  transition: background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease;
+}
+
+.ui-button-secondary:hover {
+  background: var(--muted);
+}
+
+@utility ui-button-accent {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: 1px solid transparent;
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.ui-button-accent:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #ffffff);
+}
+
+.ui-button-accent:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@utility ui-pill {
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+
+/* Unmasked: revealed passage tiles — soft “enchanted” shimmer */
+@keyframes verse-magic-shimmer {
+  0%,
+  100% {
+    background-position: 0% 40%;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      0 0 0 1px rgba(167, 139, 250, 0.35),
+      0 2px 14px rgba(124, 58, 237, 0.18);
+  }
+  50% {
+    background-position: 100% 60%;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 0 0 1px rgba(34, 211, 238, 0.28),
+      0 2px 18px rgba(192, 132, 252, 0.28);
+  }
+}
+
+@keyframes verse-magic-shimmer-dark {
+  0%,
+  100% {
+    background-position: 0% 40%;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 0 0 1px rgba(139, 92, 246, 0.45),
+      0 0 18px rgba(88, 28, 135, 0.45);
+  }
+  50% {
+    background-position: 100% 60%;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 0 0 1px rgba(34, 211, 238, 0.22),
+      0 0 22px rgba(124, 58, 237, 0.35);
+  }
+}
+
+.verse-magic-tile {
+  background-image: linear-gradient(
+    125deg,
+    #e9d5ff 0%,
+    #cffafe 35%,
+    #fae8ff 70%,
+    #ddd6fe 100%
+  );
+  background-size: 180% 180%;
+  animation: verse-magic-shimmer 3.5s ease-in-out infinite;
+}
+
+.dark .verse-magic-tile {
+  background-image: linear-gradient(
+    125deg,
+    #4c1d95 0%,
+    #312e81 30%,
+    #581c87 65%,
+    #0e7490 100%
+  );
+  background-size: 180% 180%;
+  animation: verse-magic-shimmer-dark 3.5s ease-in-out infinite;
 }
