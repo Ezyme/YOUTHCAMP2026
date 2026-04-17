@@ -96,6 +96,12 @@ function shuffleWithRng<T>(arr: T[], rng: () => number): T[] {
   return a;
 }
 
+/** Fisher–Yates order using a deterministic PRNG (same seed ⇒ same stack order for that board). */
+export function seededShuffle<T>(items: readonly T[], seed: number): T[] {
+  const rng = mulberry32(seed ^ 0xa5a5_a5a5);
+  return shuffleWithRng([...items], rng);
+}
+
 function getNeighbors(index: number, gridSize: number): number[] {
   const row = Math.floor(index / gridSize);
   const col = index % gridSize;
@@ -289,19 +295,6 @@ function revealSingleSafeTile(state: GameState, index: number): RevealResult {
   };
 }
 
-function revealLieWithoutDamage(state: GameState, index: number): RevealResult {
-  const tile = state.board.tiles[index];
-  clearFlags(state, [index]);
-  state.revealed.add(index);
-  state.liesHit++;
-  return {
-    type: "lie",
-    text: tile?.lieText ?? "A lie about your identity",
-    heartsLeft: state.hearts,
-    shieldUsed: false,
-  };
-}
-
 export function toggleFlag(state: GameState, index: number): boolean {
   if (state.status !== "playing") return false;
   if (state.revealed.has(index)) return false;
@@ -323,6 +316,23 @@ export function checkWin(state: GameState): boolean {
     }
   }
   return true;
+}
+
+/**
+ * Development / admin tooling: reveal every non-lie tile (full “clear” of the minefield).
+ * Does not flip lie tiles. If the run was still in progress and the board is complete, sets `won`.
+ */
+export function devRevealAllSafeTiles(state: GameState): void {
+  const total = state.board.gridSize * state.board.gridSize;
+  for (let i = 0; i < total; i++) {
+    const tile = state.board.tiles[i];
+    if (!tile || tile.kind === "lie") continue;
+    state.revealed.add(i);
+    state.flagged.delete(i);
+  }
+  if (state.status === "playing" && checkWin(state)) {
+    state.status = "won";
+  }
 }
 
 /** How many new tiles would open if `startIndex` were revealed (flood from zeros). */
@@ -370,32 +380,6 @@ function getLineIndices(gridSize: number, index: number, axis: "row" | "col"): n
   }
 
   return Array.from({ length: gridSize }, (_, offset) => offset * gridSize + col);
-}
-
-function findNearestHiddenLieOnLine(
-  board: Board,
-  revealed: Set<number>,
-  originIndex: number,
-  axis: "row" | "col",
-): number {
-  const gridSize = board.gridSize;
-  const row = Math.floor(originIndex / gridSize);
-  const col = originIndex % gridSize;
-  const line = getLineIndices(gridSize, originIndex, axis);
-
-  const candidates = line
-    .filter((index) => !revealed.has(index) && board.tiles[index]?.kind === "lie")
-    .sort((a, b) => {
-      const ar = Math.floor(a / gridSize);
-      const ac = a % gridSize;
-      const br = Math.floor(b / gridSize);
-      const bc = b % gridSize;
-      const ad = axis === "row" ? Math.abs(ac - col) : Math.abs(ar - row);
-      const bd = axis === "row" ? Math.abs(bc - col) : Math.abs(br - row);
-      return ad - bd || a - b;
-    });
-
-  return candidates[0] ?? -1;
 }
 
 function manhattanDistance(a: number, b: number, gridSize: number): number {
@@ -554,23 +538,32 @@ export function applyPowerUp(
       return { success: false, reason: "Pick row or column for Truth Radar." };
     }
 
-    const pick = findNearestHiddenLieOnLine(state.board, state.revealed, targetIndex, axis);
-    if (pick < 0) {
+    const line = getLineIndices(state.board.gridSize, targetIndex, axis);
+    const opened: number[] = [];
+    for (const idx of line) {
+      if (state.revealed.has(idx)) continue;
+      const tile = state.board.tiles[idx];
+      if (!tile || tile.kind === "lie") continue;
+      const reveal = revealSingleSafeTile(state, idx);
+      if ("floodRevealed" in reveal) opened.push(idx);
+    }
+
+    if (opened.length === 0) {
       return {
         success: false,
-        reason: `No hidden lie was found on that ${axis}.`,
+        reason: `No hidden truths were found on that ${axis}.`,
         lineAxis: axis,
         anchorIndex: targetIndex,
       };
     }
 
-    const lie = revealLieWithoutDamage(state, pick);
+    if (checkWin(state)) state.status = "won";
+
     return {
       success: true,
-      revealedIndex: pick,
+      revealedIndices: opened,
       lineAxis: axis,
       anchorIndex: targetIndex,
-      lieText: "text" in lie ? lie.text : "A lie about your identity",
     };
   }
 
@@ -742,6 +735,9 @@ export function trySolveVerseAssembly(
   const pointsAdded = forKey.length;
   return { ok: true, verseKey: key, pointsAdded };
 }
+
+/** Failed checks per passage key before the passage is forfeited (shown without score). */
+export const MAX_VERSE_ASSEMBLY_ATTEMPTS = 2;
 
 export function getDifficultyLies(gridSize: number, difficulty: string): number {
   const total = gridSize * gridSize;

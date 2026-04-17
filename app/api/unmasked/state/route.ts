@@ -23,6 +23,71 @@ function parseOid(id: string | null | undefined): mongoose.Types.ObjectId | null
   return new mongoose.Types.ObjectId(id);
 }
 
+/**
+ * Builds a Mongo `$set` from the request body. **Only keys actually sent** are applied.
+ * Partial client updates (e.g. verse assembly debounce) must not default missing fields to
+ * empty arrays or they wipe board progress, redeemed codes, and power-ups.
+ */
+type UnmaskedPartialUpdateResult = {
+  $set: Record<string, unknown>;
+  $unset?: Record<string, 1>;
+};
+
+function buildUnmaskedPartialUpdate(body: Record<string, unknown>): UnmaskedPartialUpdateResult {
+  const $set: Record<string, unknown> = {};
+  const $unset: Record<string, 1> = {};
+
+  const copyIfPresent = (key: string) => {
+    if (Object.hasOwn(body, key)) $set[key] = body[key];
+  };
+
+  copyIfPresent("seed");
+  copyIfPresent("gridSize");
+  copyIfPresent("totalLies");
+  copyIfPresent("revealed");
+  copyIfPresent("flagged");
+  copyIfPresent("hearts");
+  copyIfPresent("maxHearts");
+  copyIfPresent("verseKeys");
+  copyIfPresent("verseFragments");
+  if (Object.hasOwn(body, "verseAssemblyIndices") || Object.hasOwn(body, "verseAssembly")) {
+    $set.verseAssemblyIndices =
+      (body.verseAssemblyIndices as number[] | undefined) ??
+      (body.verseAssembly as number[] | undefined) ??
+      [];
+  }
+  copyIfPresent("versesRestored");
+  copyIfPresent("verseCheckAttemptsByKey");
+  copyIfPresent("versesGivenUp");
+  copyIfPresent("verseScore");
+  copyIfPresent("redeemedCodes");
+  copyIfPresent("powerUps");
+  copyIfPresent("shielded");
+  copyIfPresent("status");
+  copyIfPresent("liesHit");
+  copyIfPresent("finalScore");
+  copyIfPresent("scoreBreakdown");
+
+  if (Object.hasOwn(body, "startedAt") && body.startedAt != null) {
+    $set.startedAt = new Date(String(body.startedAt));
+  }
+  if (Object.hasOwn(body, "submittedAt")) {
+    if (body.submittedAt == null || body.submittedAt === "") $unset.submittedAt = 1;
+    else $set.submittedAt = new Date(String(body.submittedAt));
+  }
+  if (Object.hasOwn(body, "finishedAt")) {
+    if (body.finishedAt == null || body.finishedAt === "") $unset.finishedAt = 1;
+    else $set.finishedAt = new Date(String(body.finishedAt));
+  }
+
+  const hasSet = Object.keys($set).length > 0;
+  const hasUnset = Object.keys($unset).length > 0;
+  if (!hasSet && !hasUnset) {
+    return { $set: {} };
+  }
+  return hasUnset ? { $set, $unset } : { $set };
+}
+
 /** Patch legacy saves (single verse, missing verseKey on fragments). */
 async function migrateLegacyUnmaskedState(
   doc: Record<string, unknown> & { _id: mongoose.Types.ObjectId },
@@ -122,6 +187,8 @@ export async function GET(req: Request) {
           verseFragments: layout.verseFragments,
           verseAssemblyIndices: [],
           versesRestored: [],
+          verseCheckAttemptsByKey: {},
+          versesGivenUp: [],
           verseScore: 0,
           redeemedCodes: [],
           powerUps: [],
@@ -168,7 +235,9 @@ export async function POST(req: Request) {
       const layout = planUnmaskedLayout(settings, freshSeed);
 
       const keptRedeemed = (existing.redeemedCodes as string[] | undefined) ?? [];
-      let freshPowerUps: { type: PowerUpType; used: boolean }[] = [];
+      const freshPowerUps: { type: PowerUpType; used: boolean }[] = [];
+      let bonusHearts = 0;
+      let bonusShield = false;
       if (keptRedeemed.length > 0) {
         const upperCodes = keptRedeemed.map((c) => String(c).trim().toUpperCase()).filter(Boolean);
         const unique = [...new Set(upperCodes)];
@@ -185,7 +254,18 @@ export async function POST(req: Request) {
         for (const raw of keptRedeemed) {
           const u = String(raw).trim().toUpperCase();
           const t = typeByCode.get(u);
-          if (t) freshPowerUps.push(...powerUpEntriesForRedemption(t));
+          if (!t) continue;
+          const entries = powerUpEntriesForRedemption(t);
+          if (t === "extra_heart") {
+            // Auto-apply: 1 charge = +1 max heart (and +1 current). Mark entries used.
+            bonusHearts += entries.length;
+            for (const e of entries) freshPowerUps.push({ ...e, used: true });
+          } else if (t === "shield") {
+            bonusShield = true;
+            for (const e of entries) freshPowerUps.push({ ...e, used: true });
+          } else {
+            freshPowerUps.push(...entries);
+          }
         }
       }
 
@@ -200,19 +280,26 @@ export async function POST(req: Request) {
             verseFragments: layout.verseFragments,
             revealed: [],
             flagged: [],
-            hearts: 3,
-            maxHearts: 3,
+            hearts: 3 + bonusHearts,
+            maxHearts: 3 + bonusHearts,
             verseAssemblyIndices: [],
             versesRestored: [],
+            verseCheckAttemptsByKey: {},
+            versesGivenUp: [],
             verseScore: 0,
             redeemedCodes: keptRedeemed,
             powerUps: freshPowerUps,
-            shielded: false,
+            shielded: bonusShield,
             status: "playing",
             liesHit: 0,
             startedAt: new Date(),
           },
-          $unset: { finishedAt: 1 },
+          $unset: {
+            finishedAt: 1,
+            finalScore: 1,
+            scoreBreakdown: 1,
+            submittedAt: 1,
+          },
         },
         { new: true },
       ).lean();
@@ -220,27 +307,20 @@ export async function POST(req: Request) {
       return NextResponse.json(doc);
     }
 
-    const doc = await UnmaskedState.findOneAndUpdate(
-      { sessionId, teamId },
-      {
-        $set: {
-          revealed: body.revealed ?? [],
-          flagged: body.flagged ?? [],
-          hearts: body.hearts,
-          maxHearts: body.maxHearts,
-          verseAssemblyIndices: body.verseAssemblyIndices ?? body.verseAssembly ?? [],
-          versesRestored: body.versesRestored ?? [],
-          verseScore: body.verseScore ?? 0,
-          redeemedCodes: body.redeemedCodes ?? [],
-          powerUps: body.powerUps ?? [],
-          shielded: body.shielded ?? false,
-          status: body.status ?? "playing",
-          liesHit: body.liesHit ?? 0,
-          finishedAt: body.finishedAt ? new Date(body.finishedAt) : undefined,
-        },
-      },
-      { new: true },
-    );
+    const partial = buildUnmaskedPartialUpdate(body as Record<string, unknown>);
+    const hasSet = Object.keys(partial.$set).length > 0;
+    const hasUnset = partial.$unset && Object.keys(partial.$unset).length > 0;
+    if (!hasSet && !hasUnset) {
+      return NextResponse.json({ error: "No state fields to update" }, { status: 400 });
+    }
+
+    const updateDoc: Record<string, unknown> = {};
+    if (hasSet) updateDoc.$set = partial.$set;
+    if (hasUnset && partial.$unset) updateDoc.$unset = partial.$unset;
+
+    const doc = await UnmaskedState.findOneAndUpdate({ sessionId, teamId }, updateDoc, {
+      new: true,
+    }).lean();
 
     if (!doc) {
       return NextResponse.json({ error: "State not found" }, { status: 404 });

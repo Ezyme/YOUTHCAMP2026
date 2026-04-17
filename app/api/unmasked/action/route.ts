@@ -8,10 +8,13 @@ import {
   revealTile,
   toggleFlag,
   applyPowerUp,
+  devRevealAllSafeTiles,
   sortPersistedFragmentsForBoard,
   trySolveVerseAssembly,
+  MAX_VERSE_ASSEMBLY_ATTEMPTS,
   type GameState,
 } from "@/lib/games/unmasked/engine";
+import { getVerseByKey } from "@/lib/games/unmasked/verses";
 import mongoose from "mongoose";
 
 async function requireAuth(): Promise<boolean> {
@@ -102,12 +105,144 @@ export async function POST(req: Request) {
         verseKey: f.verseKey ?? legacyKey,
       }));
       const restored = (d.versesRestored as string[]) ?? [];
+      const versesGivenUp = (d.versesGivenUp as string[]) ?? [];
+      const attemptsByKey = {
+        ...((d.verseCheckAttemptsByKey as Record<string, number> | undefined) ?? {}),
+      };
+
+      const baseState = () => ({
+        revealed: d.revealed,
+        flagged: d.flagged,
+        hearts: d.hearts,
+        maxHearts: d.maxHearts,
+        liesHit: d.liesHit,
+        shielded: d.shielded,
+        powerUps: d.powerUps,
+        status: d.status,
+        versesRestored: restored,
+        versesGivenUp,
+        verseCheckAttemptsByKey: attemptsByKey,
+        verseScore: Number(d.verseScore ?? 0),
+        verseAssemblyIndices: assembly,
+      });
+
+      if (d.status !== "won") {
+        return NextResponse.json({
+          result: {
+            type: "verse_check",
+            ok: false,
+            reason:
+              "Clear the minefield first (all safe tiles revealed). Then you can assemble passages.",
+          },
+          state: baseState(),
+        });
+      }
+
+      if (assembly.length === 0) {
+        return NextResponse.json({
+          result: { type: "verse_check", ok: false, reason: "Add fragments to the builder row first." },
+          state: baseState(),
+        });
+      }
+
+      const byIndex = new Map(frags.map((f) => [f.index, f]));
+      const metas = assembly.map((i) => byIndex.get(i));
+      if (metas.some((m) => !m)) {
+        return NextResponse.json({
+          result: { type: "verse_check", ok: false, reason: "Invalid fragment selection." },
+          state: baseState(),
+        });
+      }
+
+      const attemptKey = metas[0]!.verseKey;
+      const givenUpSet = new Set(versesGivenUp);
+      if (givenUpSet.has(attemptKey)) {
+        return NextResponse.json({
+          result: {
+            type: "verse_check",
+            ok: false,
+            reason: "No check attempts left for this passage — the answer was already shown.",
+          },
+          state: baseState(),
+        });
+      }
+
       const solved = new Set(restored);
       const verdict = trySolveVerseAssembly(assembly, frags, solved);
 
-      if (!verdict.ok) {
+      if (verdict.ok) {
+        const nextRestored = [...restored, verdict.verseKey];
+        const verseScore = Number(d.verseScore ?? 0) + verdict.pointsAdded;
+        const nextAttempts = { ...attemptsByKey };
+        delete nextAttempts[verdict.verseKey];
+
+        await UnmaskedState.updateOne(
+          { sessionId: sid, teamId: tid },
+          {
+            $set: {
+              versesRestored: nextRestored,
+              verseScore,
+              verseAssemblyIndices: [],
+              verseCheckAttemptsByKey: nextAttempts,
+              versesGivenUp,
+            },
+          },
+        );
+
         return NextResponse.json({
-          result: { type: "verse_check", ok: false, reason: verdict.reason },
+          result: {
+            type: "verse_check",
+            ok: true,
+            verseKey: verdict.verseKey,
+            pointsAdded: verdict.pointsAdded,
+            verseScore,
+          },
+          state: {
+            revealed: d.revealed,
+            flagged: d.flagged,
+            hearts: d.hearts,
+            maxHearts: d.maxHearts,
+            liesHit: d.liesHit,
+            shielded: d.shielded,
+            powerUps: d.powerUps,
+            status: d.status,
+            versesRestored: nextRestored,
+            versesGivenUp,
+            verseCheckAttemptsByKey: nextAttempts,
+            verseScore,
+            verseAssemblyIndices: [],
+          },
+        });
+      }
+
+      const nextCount = (attemptsByKey[attemptKey] ?? 0) + 1;
+      attemptsByKey[attemptKey] = nextCount;
+
+      if (nextCount >= MAX_VERSE_ASSEMBLY_ATTEMPTS) {
+        const nextGivenUp = versesGivenUp.includes(attemptKey) ? versesGivenUp : [...versesGivenUp, attemptKey];
+
+        await UnmaskedState.updateOne(
+          { sessionId: sid, teamId: tid },
+          {
+            $set: {
+              verseCheckAttemptsByKey: attemptsByKey,
+              versesGivenUp: nextGivenUp,
+              verseAssemblyIndices: [],
+            },
+          },
+        );
+
+        const entry = getVerseByKey(attemptKey);
+        return NextResponse.json({
+          result: {
+            type: "verse_check",
+            ok: false,
+            forfeited: true,
+            verseKey: attemptKey,
+            reason: verdict.reason,
+            reference: entry?.reference ?? "",
+            full: entry?.full ?? "",
+          },
           state: {
             revealed: d.revealed,
             flagged: d.flagged,
@@ -118,33 +253,31 @@ export async function POST(req: Request) {
             powerUps: d.powerUps,
             status: d.status,
             versesRestored: restored,
-            verseScore: d.verseScore ?? 0,
-            verseAssemblyIndices: assembly,
+            versesGivenUp: nextGivenUp,
+            verseCheckAttemptsByKey: attemptsByKey,
+            verseScore: Number(d.verseScore ?? 0),
+            verseAssemblyIndices: [],
           },
         });
       }
-
-      const nextRestored = [...restored, verdict.verseKey];
-      const verseScore = Number(d.verseScore ?? 0) + verdict.pointsAdded;
 
       await UnmaskedState.updateOne(
         { sessionId: sid, teamId: tid },
         {
           $set: {
-            versesRestored: nextRestored,
-            verseScore,
-            verseAssemblyIndices: [],
+            verseCheckAttemptsByKey: attemptsByKey,
+            verseAssemblyIndices: assembly,
           },
         },
       );
 
+      const attemptsRemaining = MAX_VERSE_ASSEMBLY_ATTEMPTS - nextCount;
       return NextResponse.json({
         result: {
           type: "verse_check",
-          ok: true,
-          verseKey: verdict.verseKey,
-          pointsAdded: verdict.pointsAdded,
-          verseScore,
+          ok: false,
+          reason: verdict.reason,
+          attemptsRemaining,
         },
         state: {
           revealed: d.revealed,
@@ -155,9 +288,11 @@ export async function POST(req: Request) {
           shielded: d.shielded,
           powerUps: d.powerUps,
           status: d.status,
-          versesRestored: nextRestored,
-          verseScore,
-          verseAssemblyIndices: [],
+          versesRestored: restored,
+          versesGivenUp,
+          verseCheckAttemptsByKey: attemptsByKey,
+          verseScore: Number(d.verseScore ?? 0),
+          verseAssemblyIndices: assembly,
         },
       });
     }
@@ -166,7 +301,13 @@ export async function POST(req: Request) {
 
     let result: unknown = null;
 
-    switch (action) {
+    if (action === "dev_reveal_all_safe") {
+      if (process.env.NODE_ENV !== "development") {
+        return NextResponse.json({ error: "Not available outside development" }, { status: 403 });
+      }
+      devRevealAllSafeTiles(state);
+      result = { type: "dev_reveal_all_safe", revealedCount: state.revealed.size };
+    } else switch (action) {
       case "reveal": {
         if (index == null) {
           return NextResponse.json({ error: "index required" }, { status: 400 });

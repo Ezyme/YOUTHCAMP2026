@@ -16,6 +16,7 @@ import {
   type MindgameGoal,
   type MindgameState,
 } from "@/lib/games/mindgame/engine";
+import { showError, showInfo, showSuccess } from "@/lib/ui/toast";
 
 const MAX_UNDO = 400;
 const UNIT = 18;
@@ -53,8 +54,6 @@ function MindgameBoardInner({
   const [state, setState] = useState<MindgameState>(() => createInitialState(goal, variant));
   const [selected, setSelected] = useState<number | null>(null);
   const [moves, setMoves] = useState(0);
-  const [status, setStatus] = useState("");
-  const [loadError, setLoadError] = useState<string | null>(null);
   const undoStackRef = useRef<{ state: MindgameState; moves: number }[]>([]);
   const [undoLen, setUndoLen] = useState(0);
   const selectedRef = useRef<number | null>(null);
@@ -100,10 +99,8 @@ function MindgameBoardInner({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setLoadError(String(data.error ?? `Save failed (${res.status})`));
-        return;
+        showError(String(data.error ?? `Save failed (${res.status})`));
       }
-      setLoadError(null);
     },
     [sessionId, teamId, boardSnapshot, variant],
   );
@@ -111,8 +108,6 @@ function MindgameBoardInner({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoadError(null);
-
       const fresh = createInitialState(goal, variant);
 
       const ck = makeClientKey(sessionId, teamId, variant);
@@ -122,13 +117,13 @@ function MindgameBoardInner({
 
       const res = await fetch(`/api/mindgame/state?${params}`).catch(() => null);
       if (!res) {
-        if (!cancelled) setLoadError("Could not load saved board (network).");
+        if (!cancelled) showError("Could not load saved board (network).");
         return;
       }
       if (!res.ok) {
         if (!cancelled) {
           const data = await res.json().catch(() => ({}));
-          setLoadError(String(data.error ?? `Load failed (${res.status})`));
+          showError(String(data.error ?? `Load failed (${res.status})`));
         }
         return;
       }
@@ -158,9 +153,8 @@ function MindgameBoardInner({
           clearUndoHistory();
           setState(s);
           setMoves(doc.moves ?? 0);
-          setLoadError(null);
         } catch {
-          if (!cancelled) setLoadError("Saved board data was invalid — using a fresh layout.");
+          if (!cancelled) showError("Saved board data was invalid — using a fresh layout.");
         }
         return;
       }
@@ -169,9 +163,7 @@ function MindgameBoardInner({
       setState(fresh);
       setMoves(0);
       if (doc?.positions?.length && !match) {
-        setLoadError(
-          "Saved layout did not match this puzzle — reset to a fair new start. Others see this after sync.",
-        );
+        showInfo("Saved layout didn't match — starting a fresh board.");
       }
       if (sessionId && teamId) {
         await persist(fresh, 0);
@@ -207,7 +199,7 @@ function MindgameBoardInner({
     setUndoLen(stack.length);
     setState(entry.state);
     setMoves(entry.moves);
-    setStatus("Undid last move.");
+    showInfo("Move undone.");
     setSelected(null);
     await persist(entry.state, entry.moves);
   }, [persist]);
@@ -218,8 +210,7 @@ function MindgameBoardInner({
     setState(fresh);
     setMoves(0);
     setSelected(null);
-    setStatus("Layout reset to fair start.");
-    setLoadError(null);
+    showSuccess("Layout reset.");
     await persist(fresh, 0);
   }, [goal, variant, persist, clearUndoHistory]);
 
@@ -230,7 +221,7 @@ function MindgameBoardInner({
         if (t?.closest?.("textarea, input, select, [contenteditable=true]")) return;
         if (selectedRef.current !== null) {
           setSelected(null);
-          setStatus("Selection cleared.");
+          showInfo("Selection cleared.");
         }
         return;
       }
@@ -254,27 +245,27 @@ function MindgameBoardInner({
     if (pin !== null) {
       if (selected === pin) {
         setSelected(null);
-        setStatus("Selection cleared — tap a pin to move it.");
+        showInfo("Pin deselected.");
         return;
       }
       setSelected(pin);
-      setStatus(`Pin ${pin + 1} active — tap an adjacent empty crossing to move (same pin stays selected after each step).`);
+      showInfo(`Pin ${pin + 1} selected — tap an adjacent crossing.`);
       return;
     }
-    if (selected === null) return;
+    if (selected === null) {
+      showInfo("Tap a pin first.");
+      return;
+    }
 
     const next = stepPin(state, selected, { r, c });
     if (!next) {
-      setStatus(
-        "Illegal move — tap an adjacent empty intersection only (one step: up, down, left, right, or diagonal along dashed violet lines between diamond crossings).",
-      );
+      showError("Invalid move — only 1 step to an empty crossing.");
       return;
     }
     const nextMoves = moves + 1;
     pushUndoSnapshot(state, moves);
     setState(next);
     setMoves(nextMoves);
-    setStatus(`Moved pin ${selected + 1} — still active; tap the next empty crossing or tap this pin again to deselect.`);
     await persist(next, nextMoves);
   }
 
@@ -307,18 +298,9 @@ function MindgameBoardInner({
           </span>
         ) : null}
       </div>
-      {status ? (
-        <p className="text-xs text-muted-foreground">{status}</p>
-      ) : null}
-      {loadError ? (
-        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
-          {loadError}
-        </p>
-      ) : null}
-
       <div
         className="mx-auto w-full max-w-[min(100%,96vw,24rem)] shrink-0 max-h-[min(78svh,72dvh,48rem)]"
-        style={{ aspectRatio: `${vbW} / ${vbH}` }}
+        style={{ aspectRatio: `${vbW} / ${vbH}`, touchAction: "manipulation" }}
       >
         <svg
           className="size-full text-muted-foreground"
@@ -512,10 +494,6 @@ export function MindgameBoard({
 
   const boardLabel =
     boardVariant === "quick" ? "8 × 3 (8 pins)" : "10 × 3 (10 pins)";
-  const boardDesc =
-    boardVariant === "quick"
-      ? "A shorter, denser maze — same rules, fewer rows and pins."
-      : "The full maze — choke rows, wing routing, and diagonal bridges.";
 
   return (
     <div className="space-y-6">
@@ -527,38 +505,23 @@ export function MindgameBoard({
       ) : null}
 
       <div className="ui-card-muted rounded-xl p-4 text-xs leading-relaxed text-foreground">
-        <p className="font-semibold text-foreground">Rules</p>
+        <p className="font-semibold text-foreground">How to play ({boardLabel})</p>
         <ul className="mt-2 list-inside list-disc space-y-1.5">
           <li>
-            <strong>Fixed board ({boardLabel}):</strong> {boardDesc}
+            Tap a pin, then tap a <strong>neighboring empty crossing</strong> (1 step).
           </li>
           <li>
-            <strong>Win:</strong> get <strong>all pins on the center column</strong>, sorted{" "}
-            <strong>top to bottom</strong> for your goal mode. You must finish as one vertical line.
+            <strong>Walls (X)</strong> block moves. <strong>Violet diamonds</strong> enable diagonals
+            (both ends must be diamonds).
           </li>
           <li>
-            <strong>Walls (X marks)</strong> are impassable.{" "}
-            <strong>Choke rows</strong> block both sideways exits — from the center you can only
-            move up or down. Route through the side columns to get around them.
+            Goal: line up every pin on the <strong>center column</strong>, sorted top-to-bottom.
           </li>
-          <li>
-            <strong>Violet diamonds</strong> mark where diagonal moves are allowed (both endpoints
-            must be diamonds). <strong>Dashed violet lines</strong> on the board connect those
-            crossings so you can see valid diagonal steps at a glance.
-          </li>
-          <li>
-            Each turn, move <strong>exactly one step</strong> to a neighboring open intersection. The
-            pin you picked <strong>stays active</strong> after each move until you tap it again, choose
-            another pin, press <kbd className="rounded border border-border px-0.5">Esc</kbd>, or finish the goal.
-          </li>
-          <li>
-            Pins cannot pass through or land on another pin. Empty intersection required.
-          </li>
-          <li>
-            Choose <strong>board size</strong> and <strong>goal mode</strong>. Pins start scrambled;
-            return everyone to the center column in the winning order.
-          </li>
+          <li>Use Undo / Reset anytime.</li>
         </ul>
+        <p className="mt-3 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:bg-amber-950/60 dark:text-amber-100">
+          <strong>Tip:</strong> park outer pins first, finish the middle column last.
+        </p>
       </div>
 
       <div className="ui-card flex flex-col gap-4 rounded-xl p-4 sm:flex-row sm:flex-wrap sm:items-end">

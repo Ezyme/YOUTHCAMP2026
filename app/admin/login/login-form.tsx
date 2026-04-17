@@ -2,26 +2,26 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 export function AdminLoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = searchParams.get("next") ?? "/admin";
   const [secret, setSecret] = useState("");
-  const [error, setError] = useState("");
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
     const res = await fetch("/api/admin/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ secret }),
     });
     if (!res.ok) {
-      setError("Invalid secret");
+      showError("Invalid secret");
       return;
     }
+    showSuccess("Signed in");
     router.push(next);
     router.refresh();
   }
@@ -42,9 +42,6 @@ export function AdminLoginForm() {
           placeholder="Secret"
           className="ui-field w-full rounded-xl px-4 py-3 text-sm"
         />
-        {error ? (
-          <p className="text-sm text-accent">{error}</p>
-        ) : null}
         <button
           type="submit"
           className="ui-button w-full rounded-xl py-3 text-sm font-medium"

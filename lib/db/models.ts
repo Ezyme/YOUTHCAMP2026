@@ -151,6 +151,10 @@ export interface IUnmaskedState {
   /** @deprecated Use verseAssemblyIndices */
   verseAssembly?: number[];
   versesRestored: string[];
+  /** Failed "Check passage" submissions per verse key (capped before forfeit). */
+  verseCheckAttemptsByKey?: Record<string, number>;
+  /** Passage keys where max failed checks were reached — answer shown, no verse score. */
+  versesGivenUp?: string[];
   verseScore: number;
   /** @deprecated Use versesRestored */
   verseCompleted?: boolean;
@@ -161,6 +165,12 @@ export interface IUnmaskedState {
   liesHit: number;
   startedAt: Date;
   finishedAt?: Date;
+  /** Final 0-100 score once the player submits at end-of-game. */
+  finalScore?: number;
+  /** Breakdown mirroring the weighted components of `finalScore`. */
+  scoreBreakdown?: { board: number; verses: number; hearts: number };
+  /** Timestamp the player locked in the score. */
+  submittedAt?: Date;
 }
 
 export interface IPowerUpCode {
@@ -413,6 +423,8 @@ const UnmaskedStateSchema = new Schema<IUnmaskedState>(
     verseAssemblyIndices: { type: [Number], default: [] },
     verseAssembly: { type: [Number], default: [] },
     versesRestored: { type: [String], default: [] },
+    verseCheckAttemptsByKey: { type: Schema.Types.Mixed, default: {} },
+    versesGivenUp: { type: [String], default: [] },
     verseScore: { type: Number, default: 0 },
     verseCompleted: { type: Boolean, default: false },
     redeemedCodes: { type: [String], default: [] },
@@ -429,6 +441,18 @@ const UnmaskedStateSchema = new Schema<IUnmaskedState>(
     liesHit: { type: Number, default: 0 },
     startedAt: { type: Date, default: Date.now },
     finishedAt: Date,
+    finalScore: { type: Number },
+    scoreBreakdown: {
+      type: new Schema(
+        {
+          board: { type: Number, required: true },
+          verses: { type: Number, required: true },
+          hearts: { type: Number, required: true },
+        },
+        { _id: false },
+      ),
+    },
+    submittedAt: { type: Date },
   },
   { timestamps: true },
 );

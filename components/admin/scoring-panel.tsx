@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { pointsForPlacement } from "@/lib/scoring/points";
 import type { GameScoring } from "@/lib/db/models";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type Game = {
   _id: string;
@@ -25,7 +26,6 @@ export function ScoringPanel({
 }) {
   const [gameId, setGameId] = useState(games[0]?._id ?? "");
   const [placements, setPlacements] = useState<Record<string, number>>({});
-  const [msg, setMsg] = useState("");
   const [existing, setExisting] = useState<Record<string, number>>({});
 
   const game = useMemo(
@@ -59,7 +59,6 @@ export function ScoringPanel({
   }
 
   async function save() {
-    setMsg("");
     if (!game) return;
     const results = teams.map((t) => ({
       teamId: t._id,
@@ -72,10 +71,10 @@ export function ScoringPanel({
     });
     const data = await res.json();
     if (!res.ok) {
-      setMsg(data.error ?? "Save failed");
+      showError(String(data.error ?? "Save failed"));
       return;
     }
-    setMsg("Saved.");
+    showSuccess("Results saved");
   }
 
   if (!sessionId) {
@@ -164,7 +163,6 @@ export function ScoringPanel({
       >
         Save results (validates 1–6 permutation)
       </button>
-      {msg ? <p className="text-xs text-muted-foreground">{msg}</p> : null}
     </div>
   );
 }

@@ -208,3 +208,17 @@ main h3 {
   background-size: 180% 180%;
   animation: verse-magic-shimmer-dark 3.5s ease-in-out infinite;
 }
+
+/* Unmasked: lock the board against accidental mobile gestures.
+   - touch-action:none disables pinch/zoom and double-tap zoom inside the grid.
+   - user-select/touch-callout stop the iOS text-selection highlight flash. */
+.unmasked-board {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+.unmasked-board button {
+  touch-action: none;
+}

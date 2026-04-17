@@ -13,14 +13,29 @@ import {
   Crosshair,
   Compass,
   Footprints,
+  Trophy,
+  Bomb,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
 } from "lucide-react";
 import {
   generateBoard,
+  seededShuffle,
   sortPersistedFragmentsForBoard,
+  MAX_VERSE_ASSEMBLY_ATTEMPTS,
   type Board,
 } from "@/lib/games/unmasked/engine";
 import { getVerseByKey } from "@/lib/games/unmasked/verses";
+import { computeUnmaskedScore, marginalVersesSliceDelta } from "@/lib/games/unmasked/scoring";
 import type { PowerUpType } from "@/lib/db/models";
+import { showError, showInfo, showSuccess, showWarning } from "@/lib/ui/toast";
+import {
+  POWER_UP_ARMED_BANNER,
+  POWER_UP_HINT,
+  POWER_UP_NAME,
+  POWER_UP_SHORT,
+} from "@/lib/ui/powerup-copy";
 
 type VerseFragRow = { index: number; text: string; order: number; verseKey: string };
 
@@ -38,6 +53,8 @@ type PersistedState = {
   verseAssemblyIndices?: number[];
   verseAssembly?: number[];
   versesRestored?: string[];
+  verseCheckAttemptsByKey?: Record<string, number>;
+  versesGivenUp?: string[];
   verseScore?: number;
   verseCompleted?: boolean;
   redeemedCodes: string[];
@@ -47,6 +64,9 @@ type PersistedState = {
   liesHit: number;
   startedAt: string;
   finishedAt?: string;
+  finalScore?: number;
+  scoreBreakdown?: { board: number; verses: number; hearts: number };
+  submittedAt?: string;
 };
 
 const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield }> = {
@@ -59,25 +79,6 @@ const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield 
   lie_pin: { label: "Lie Pin", icon: Flag },
   verse_compass: { label: "Verse Compass", icon: Compass },
   gentle_step: { label: "Gentle Step", icon: Footprints },
-};
-
-/** Short hints for redeem UI (20×20 + ~28% lies = need clarity). */
-const POWER_UP_HINTS: Record<PowerUpType, string> = {
-  extra_heart: "Tap once — +1 max heart and refill one heart.",
-  reveal:
-    "Tap once per charge — flood-reveals one random hidden safe tile. Each redeemed Reveal code grants 5 charges.",
-  scout: "Arm, then tap a hidden tile — peek lie vs truth only. Using it still spends the charge even if it fizzles.",
-  shield: "Tap once — next lie you hit is blocked (no heart lost).",
-  safe_opening:
-    "Tap once — auto-opens the best zero-adjacent patch. If no opening qualifies, the charge still burns.",
-  truth_radar:
-    "Arm, tap a tile, then pick Row or Column — reveals the nearest lie on that line without heart loss.",
-  lie_pin:
-    "Arm, tap a focal tile — pins the nearest hidden lie to that point. If none remain, it fizzles and still spends the charge.",
-  verse_compass:
-    "Arm, tap an anchor tile — reveals up to two nearest hidden verse fragments from there.",
-  gentle_step:
-    "Arm, tap a focal tile — reveals the nearest hidden safe square only. No spread, no chain reaction.",
 };
 
 const ALL_POWER_UP_TYPES: PowerUpType[] = [
@@ -100,6 +101,58 @@ const ARMABLE_POWER_UPS = new Set<PowerUpType>([
   "gentle_step",
 ]);
 
+/**
+ * Verse fragment palette. Picked deterministically from the verseKey so the same passage
+ * always uses the same colour pair across the bank, builder row, and legend.
+ */
+const VERSE_PALETTE: { bg: string; text: string; ring: string; chip: string }[] = [
+  {
+    bg: "bg-amber-100 dark:bg-amber-900/60",
+    text: "text-amber-950 dark:text-amber-50",
+    ring: "border-amber-400 dark:border-amber-700",
+    chip: "bg-amber-500",
+  },
+  {
+    bg: "bg-sky-100 dark:bg-sky-900/60",
+    text: "text-sky-950 dark:text-sky-50",
+    ring: "border-sky-400 dark:border-sky-700",
+    chip: "bg-sky-500",
+  },
+  {
+    bg: "bg-emerald-100 dark:bg-emerald-900/60",
+    text: "text-emerald-950 dark:text-emerald-50",
+    ring: "border-emerald-400 dark:border-emerald-700",
+    chip: "bg-emerald-500",
+  },
+  {
+    bg: "bg-violet-100 dark:bg-violet-900/60",
+    text: "text-violet-950 dark:text-violet-50",
+    ring: "border-violet-400 dark:border-violet-700",
+    chip: "bg-violet-500",
+  },
+  {
+    bg: "bg-rose-100 dark:bg-rose-900/60",
+    text: "text-rose-950 dark:text-rose-50",
+    ring: "border-rose-400 dark:border-rose-700",
+    chip: "bg-rose-500",
+  },
+  {
+    bg: "bg-cyan-100 dark:bg-cyan-900/60",
+    text: "text-cyan-950 dark:text-cyan-50",
+    ring: "border-cyan-400 dark:border-cyan-700",
+    chip: "bg-cyan-500",
+  },
+];
+
+function verseColorIndex(verseKey: string, ordered: string[]): number {
+  const idx = ordered.indexOf(verseKey);
+  if (idx >= 0) return idx % VERSE_PALETTE.length;
+  // Fallback hash
+  let h = 0;
+  for (let i = 0; i < verseKey.length; i++) h = (h * 31 + verseKey.charCodeAt(i)) | 0;
+  return Math.abs(h) % VERSE_PALETTE.length;
+}
+
 function numberColor(n: number): string {
   const colors = [
     "",
@@ -120,6 +173,7 @@ function normalizeLoadedState(data: PersistedState): {
   verseFragments: VerseFragRow[];
   assembly: number[];
   restored: string[];
+  versesGivenUp: string[];
   score: number;
 } {
   const legacyKey = data.verseKey ?? "";
@@ -146,7 +200,8 @@ function normalizeLoadedState(data: PersistedState): {
     (data.verseCompleted && legacyKey ?
       frags.filter((f) => f.verseKey === legacyKey).length
     : 0);
-  return { verseKeys: keys, verseFragments: frags, assembly, restored, score };
+  const versesGivenUp = data.versesGivenUp ?? [];
+  return { verseKeys: keys, verseFragments: frags, assembly, restored, versesGivenUp, score };
 }
 
 export function UnmaskedBoard({
@@ -168,6 +223,8 @@ export function UnmaskedBoard({
   const [retrying, setRetrying] = useState(false);
 
   const [board, setBoard] = useState<Board | null>(null);
+  /** Board seed — used to shuffle passage stack order (stable per run, not verse order). */
+  const [layoutSeed, setLayoutSeed] = useState(0);
   const [verseKeys, setVerseKeys] = useState<string[]>([]);
   const [verseFragments, setVerseFragments] = useState<VerseFragRow[]>([]);
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
@@ -180,15 +237,19 @@ export function UnmaskedBoard({
   const [powerUps, setPowerUps] = useState<{ type: PowerUpType; used: boolean }[]>([]);
   const [verseAssemblyIndices, setVerseAssemblyIndices] = useState<number[]>([]);
   const [versesRestored, setVersesRestored] = useState<string[]>([]);
+  const [versesGivenUp, setVersesGivenUp] = useState<string[]>([]);
   const [verseScore, setVerseScore] = useState(0);
   const [redeemedCodes, setRedeemedCodes] = useState<string[]>([]);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   const [codeInput, setCodeInput] = useState("");
-  const [codeMsg, setCodeMsg] = useState("");
-  const [verseMsg, setVerseMsg] = useState("");
-  const [lastSolvedText, setLastSolvedText] = useState<string | null>(null);
+  const [lastSolvedVerse, setLastSolvedVerse] = useState<{
+    reference: string;
+    full: string;
+    lineCredits?: number;
+    versesSliceDelta?: number;
+  } | null>(null);
   const [activePowerUp, setActivePowerUp] = useState<PowerUpType | null>(null);
   const [scoutPeek, setScoutPeek] = useState<{ index: number; kind: string } | null>(null);
   const [liePopup, setLiePopup] = useState<{ text: string; shieldUsed: boolean } | null>(null);
@@ -199,9 +260,36 @@ export function UnmaskedBoard({
     "reveal" | "safe_opening" | "truth_radar" | "lie_pin" | "verse_compass" | "gentle_step" | null
   >(null);
   const [shimmerTile, setShimmerTile] = useState<number | null>(null);
+  const [tipPowerUp, setTipPowerUp] = useState<PowerUpType | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [finalScore, setFinalScore] = useState<number | null>(null);
+  const [scoreBreakdownSaved, setScoreBreakdownSaved] = useState<{
+    board: number;
+    verses: number;
+    hearts: number;
+  } | null>(null);
 
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Prevents duplicate auto-submit; reset on new board (`reloadKey`). */
+  const autoSubmitVersesRef = useRef(false);
+
+  const cancelPowerUpTip = useCallback(() => {
+    if (tipTimer.current) {
+      clearTimeout(tipTimer.current);
+      tipTimer.current = null;
+    }
+    setTipPowerUp(null);
+  }, []);
+
+  const startPowerUpTip = useCallback((type: PowerUpType) => {
+    if (tipTimer.current) clearTimeout(tipTimer.current);
+    tipTimer.current = setTimeout(() => {
+      setTipPowerUp(type);
+      // Auto-dismiss the tooltip after a moment so it never sticks around.
+      tipTimer.current = setTimeout(() => setTipPowerUp(null), 3000);
+    }, 450);
+  }, []);
 
   const flashTiles = useCallback(
     (
@@ -255,6 +343,7 @@ export function UnmaskedBoard({
         const b = generateBoard(data.seed, data.gridSize, data.totalLies, sorted);
 
         setBoard(b);
+        setLayoutSeed(data.seed);
         setVerseKeys(norm.verseKeys);
         setVerseFragments(norm.verseFragments);
         setRevealed(new Set(data.revealed));
@@ -267,9 +356,17 @@ export function UnmaskedBoard({
         setPowerUps(data.powerUps);
         setVerseAssemblyIndices(norm.assembly);
         setVersesRestored(norm.restored);
+        setVersesGivenUp(norm.versesGivenUp);
         setVerseScore(norm.score);
         setRedeemedCodes(data.redeemedCodes);
         setStartedAt(new Date(data.startedAt));
+        if (typeof data.finalScore === "number" && data.scoreBreakdown) {
+          setFinalScore(data.finalScore);
+          setScoreBreakdownSaved(data.scoreBreakdown);
+        } else {
+          setFinalScore(null);
+          setScoreBreakdownSaved(null);
+        }
       } catch {
         if (!cancelled) setError("Network error loading game state");
       }
@@ -280,6 +377,10 @@ export function UnmaskedBoard({
     };
   }, [sessionId, teamId, reloadKey]);
 
+  useEffect(() => {
+    autoSubmitVersesRef.current = false;
+  }, [reloadKey]);
+
   async function handleRetry() {
     if (
       !confirm(
@@ -289,8 +390,7 @@ export function UnmaskedBoard({
       return;
     }
     setRetrying(true);
-    setVerseMsg("");
-    setLastSolvedText(null);
+    setLastSolvedVerse(null);
     try {
       const res = await fetch("/api/unmasked/state", {
         method: "POST",
@@ -299,7 +399,7 @@ export function UnmaskedBoard({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setVerseMsg(String(data.error ?? "Could not start a new board"));
+        showError(String(data.error ?? "Could not start a new board"));
         setRetrying(false);
         return;
       }
@@ -354,6 +454,7 @@ export function UnmaskedBoard({
       setPowerUps(s.powerUps);
       setStatus(s.status);
       if (Array.isArray(s.versesRestored)) setVersesRestored(s.versesRestored);
+      if (Array.isArray(s.versesGivenUp)) setVersesGivenUp(s.versesGivenUp);
       if (typeof s.verseScore === "number") setVerseScore(s.verseScore);
       if (Array.isArray(s.verseAssemblyIndices)) {
         setVerseAssemblyIndices(s.verseAssemblyIndices);
@@ -363,8 +464,35 @@ export function UnmaskedBoard({
     [sessionId, teamId, gameSlug],
   );
 
+  const handleDevClearMinefield = useCallback(async () => {
+    const r = await doAction("dev_reveal_all_safe");
+    if (r == null) {
+      showError("Could not clear minefield.");
+      return;
+    }
+    showInfo("Dev: all safe tiles revealed (minefield cleared).");
+  }, [doAction]);
+
+  /** Line credits per passage = fragment count (1 credit per line when solved); see trySolveVerseAssembly. */
+  const versePtsByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const f of verseFragments) {
+      m.set(f.verseKey, (m.get(f.verseKey) ?? 0) + 1);
+    }
+    return m;
+  }, [verseFragments]);
+
+  /** Sum of line credits on the board (tags add up to this — not the /100 “Verses” slice). */
+  const totalLineCredits = useMemo(() => verseFragments.length, [verseFragments]);
+
   const doCheckVerse = useCallback(async () => {
-    setVerseMsg("");
+    if (status !== "won") {
+      showInfo("Clear the minefield first", {
+        description: "Reveal every safe tile, then you can build and check passages.",
+        duration: 4200,
+      });
+      return;
+    }
     const res = await fetch("/api/unmasked/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -379,20 +507,50 @@ export function UnmaskedBoard({
     const s = data.state;
     if (s) {
       setVersesRestored(s.versesRestored ?? []);
+      setVersesGivenUp(s.versesGivenUp ?? []);
       setVerseScore(s.verseScore ?? 0);
       setVerseAssemblyIndices(s.verseAssemblyIndices ?? []);
     }
     const r = data.result;
     if (r?.ok) {
       const entry = getVerseByKey(r.verseKey);
-      setLastSolvedText(entry?.full ?? null);
-      setVerseMsg(`+${r.pointsAdded} pts — passage restored!`);
-      setTimeout(() => setVerseMsg(""), 4000);
-      setTimeout(() => setLastSolvedText(null), 12000);
+      const reference = entry?.reference ?? "";
+      const full = entry?.full ?? "";
+      const prevRestored = versesRestored.length;
+      const versesSliceDelta = marginalVersesSliceDelta(prevRestored, verseKeys.length);
+      setLastSolvedVerse({
+        reference,
+        full,
+        lineCredits: r.pointsAdded,
+        versesSliceDelta: versesSliceDelta > 0 ? versesSliceDelta : undefined,
+      });
+      const sliceHint =
+        versesSliceDelta > 0 ?
+          ` Your /100 “Verses” score also increased by ${versesSliceDelta} (separate from line credits).`
+        : "";
+      showSuccess(`+${r.pointsAdded} line credits`, {
+        description:
+          (reference ? `${reference} — passage restored!` : "Passage restored!") + sliceHint,
+        duration: 5200,
+      });
+      setTimeout(() => setLastSolvedVerse(null), 18000);
+    } else if (r?.forfeited && r?.verseKey) {
+      const atStake = versePtsByKey.get(r.verseKey) ?? 0;
+      showWarning("No attempts left for this passage", {
+        description: `The answer is shown below — ${atStake} line credit${atStake === 1 ? "" : "s"} not earned.`,
+        duration: 5500,
+      });
     } else if (r?.reason) {
-      setVerseMsg(r.reason);
+      const left =
+        typeof r.attemptsRemaining === "number" ?
+          `${r.attemptsRemaining} attempt${r.attemptsRemaining === 1 ? "" : "s"} left`
+        : undefined;
+      showWarning(r.reason, {
+        description: left,
+        duration: 4800,
+      });
     }
-  }, [sessionId, teamId, verseAssemblyIndices]);
+  }, [sessionId, teamId, verseAssemblyIndices, status, versePtsByKey, versesRestored.length, verseKeys.length]);
 
   function resetPowerUpIntent() {
     setActivePowerUp(null);
@@ -400,8 +558,7 @@ export function UnmaskedBoard({
   }
 
   function showPowerUpMessage(message: string, duration = 3500) {
-    setCodeMsg(message);
-    setTimeout(() => setCodeMsg(""), duration);
+    showInfo(message, { duration });
   }
 
   async function handleTileClick(index: number) {
@@ -506,22 +663,6 @@ export function UnmaskedBoard({
     }
   }
 
-  function handleLongPressStart(index: number) {
-    if (ARMABLE_POWER_UPS.has(activePowerUp ?? "extra_heart")) return;
-    longPressTimer.current = setTimeout(() => {
-      if (status === "playing" && !revealed.has(index)) {
-        void doAction("flag", index);
-      }
-    }, 500);
-  }
-
-  function handleLongPressEnd() {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }
-
   function handleContextMenu(e: React.MouseEvent, index: number) {
     e.preventDefault();
     if (ARMABLE_POWER_UPS.has(activePowerUp ?? "extra_heart")) return;
@@ -532,7 +673,7 @@ export function UnmaskedBoard({
 
   async function handleRedeem() {
     if (!codeInput.trim()) return;
-    setCodeMsg("");
+    const code = codeInput.trim().toUpperCase();
     const res = await fetch("/api/unmasked/redeem", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -540,20 +681,89 @@ export function UnmaskedBoard({
     });
     const data = await res.json();
     if (!res.ok) {
-      setCodeMsg(data.error ?? "Failed");
+      showError(String(data.error ?? "Redeem failed"));
       return;
     }
-    const label = POWER_UP_LABELS[data.powerUpType as PowerUpType]?.label ?? data.powerUpType;
-    setCodeMsg(
-      data.repaired ?
-        `Recovered unlock: ${label} — your code was saved earlier; the reward is now applied.`
-      : `Unlocked: ${label}`,
+    const type = data.powerUpType as PowerUpType;
+    const name = POWER_UP_NAME[type] ?? type;
+    const hint = POWER_UP_SHORT[type] ?? "";
+    const applied = Boolean(data.applied);
+    showSuccess(
+      data.repaired ? `Recovered: ${name}` : `Unlocked: ${name}`,
+      { description: hint },
     );
-    setRedeemedCodes((prev) => [...prev, codeInput.trim().toUpperCase()]);
-    setPowerUps((prev) => [...prev, { type: data.powerUpType, used: false }]);
+    setRedeemedCodes((prev) => [...prev, code]);
+    if (applied) {
+      // Auto-applied: add as `used` so the inventory reflects a consumed charge. Also mirror
+      // the server-side side effect locally (hearts / shield) so the UI updates instantly.
+      setPowerUps((prev) => [...prev, { type, used: true }]);
+      if (type === "extra_heart") {
+        setMaxHearts((m) => m + 1);
+        setHearts((h) => h + 1);
+      } else if (type === "shield") {
+        setShielded(true);
+      }
+    } else {
+      setPowerUps((prev) => [...prev, { type, used: false }]);
+    }
     setCodeInput("");
-    setTimeout(() => setCodeMsg(""), 3000);
   }
+
+  const handleSubmitScore = useCallback(async (): Promise<boolean> => {
+    if (status === "playing") {
+      showError("Finish the board before submitting your score.");
+      return false;
+    }
+    if (finalScore != null) {
+      showInfo("Score already submitted.");
+      return true;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/unmasked/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, teamId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(String(data.error ?? "Could not submit score"));
+        return false;
+      }
+      setFinalScore(Number(data.finalScore));
+      if (data.scoreBreakdown) setScoreBreakdownSaved(data.scoreBreakdown);
+      showSuccess(
+        data.already ? "Score already on record." : `Score submitted: ${data.finalScore}/100`,
+      );
+      return true;
+    } finally {
+      setSubmitting(false);
+    }
+  }, [sessionId, teamId, status, finalScore]);
+
+  useEffect(() => {
+    if (loading || !board || finalScore != null || submitting) return;
+    if (status !== "won") return;
+    const allVersesDone =
+      verseKeys.length === 0 ||
+      verseKeys.every((k) => versesRestored.includes(k) || versesGivenUp.includes(k));
+    if (!allVersesDone) return;
+    if (autoSubmitVersesRef.current) return;
+    autoSubmitVersesRef.current = true;
+    void handleSubmitScore().then((ok) => {
+      if (!ok) autoSubmitVersesRef.current = false;
+    });
+  }, [
+    loading,
+    board,
+    finalScore,
+    submitting,
+    status,
+    verseKeys,
+    versesRestored,
+    versesGivenUp,
+    handleSubmitScore,
+  ]);
 
   async function handleUsePowerUp(type: PowerUpType) {
     if (ARMABLE_POWER_UPS.has(type)) {
@@ -606,29 +816,27 @@ export function UnmaskedBoard({
       showPowerUpMessage(result.reason ?? "Truth Radar fizzled.", 4200);
       return;
     }
-    if (typeof result.revealedIndex === "number") {
-      flashTiles([origin, result.revealedIndex], "truth_radar", 2200);
-      setLiePopup({
-        text: String(result.lieText ?? "A lie about your identity"),
-        shieldUsed: false,
-      });
-      setTimeout(() => setLiePopup(null), 4000);
-      showPowerUpMessage(
-        `Truth Radar exposed a lie on that ${axis}.`,
-        3000,
+    const revealedIndices = Array.isArray(result.revealedIndices) ? result.revealedIndices : [];
+    if (revealedIndices.length > 0) {
+      flashTiles([origin, ...revealedIndices], "truth_radar", 2400);
+      showSuccess(
+        `Truth Radar revealed ${revealedIndices.length} truth${revealedIndices.length === 1 ? "" : "s"} on that ${axis}.`,
       );
+    } else {
+      showInfo(`No hidden truths were left on that ${axis}.`);
     }
   }
 
   const solvedSet = useMemo(() => new Set(versesRestored), [versesRestored]);
+  const givenUpSet = useMemo(() => new Set(versesGivenUp), [versesGivenUp]);
 
   const indicesSolvedAway = useMemo(() => {
     const s = new Set<number>();
     for (const f of verseFragments) {
-      if (solvedSet.has(f.verseKey)) s.add(f.index);
+      if (solvedSet.has(f.verseKey) || givenUpSet.has(f.verseKey)) s.add(f.index);
     }
     return s;
-  }, [verseFragments, solvedSet]);
+  }, [verseFragments, solvedSet, givenUpSet]);
 
   /** Revealed fragments still in play (not yet restored as a complete verse). */
   const availablePool = useMemo(() => {
@@ -637,10 +845,22 @@ export function UnmaskedBoard({
     );
   }, [verseFragments, revealed, indicesSolvedAway]);
 
+  /** Fixed permutation for the run: fragments in the stack follow this order (not verse/reading order). */
+  const verseStackOrder = useMemo(() => {
+    if (verseFragments.length === 0) return [];
+    return seededShuffle(
+      verseFragments.map((f) => f.index),
+      layoutSeed,
+    );
+  }, [verseFragments, layoutSeed]);
+
   const bankIndices = useMemo(() => {
     const inAssembly = new Set(verseAssemblyIndices);
-    return availablePool.filter((f) => !inAssembly.has(f.index)).map((f) => f.index);
-  }, [availablePool, verseAssemblyIndices]);
+    const inBank = new Set(
+      availablePool.filter((f) => !inAssembly.has(f.index)).map((f) => f.index),
+    );
+    return verseStackOrder.filter((idx) => inBank.has(idx));
+  }, [availablePool, verseAssemblyIndices, verseStackOrder]);
 
   const assemblyFragments = useMemo(() => {
     return verseAssemblyIndices
@@ -648,8 +868,10 @@ export function UnmaskedBoard({
       .filter(Boolean) as VerseFragRow[];
   }, [verseAssemblyIndices, verseFragments]);
 
+  const canAssembleVerses = status === "won";
+
   function addToAssembly(tileIndex: number) {
-    if (status !== "playing") return;
+    if (!canAssembleVerses) return;
     if (!availablePool.some((f) => f.index === tileIndex)) return;
     if (verseAssemblyIndices.includes(tileIndex)) return;
     const next = [...verseAssemblyIndices, tileIndex];
@@ -700,8 +922,22 @@ export function UnmaskedBoard({
     }
     return counts;
   }, [powerUps]);
-  const versesLeft = verseKeys.filter((k) => !solvedSet.has(k)).length;
   const cellRem = board ? Math.min(2.85, 58 / board.gridSize) : 2.85;
+
+  const liveScore = useMemo(() => {
+    if (!board) return { total: 0, breakdown: { board: 0, verses: 0, hearts: 0 } };
+    return computeUnmaskedScore({
+      revealedSafe,
+      totalSafe,
+      versesRestored: versesRestored.length,
+      totalVerses: verseKeys.length,
+      hearts,
+      maxHearts,
+      final: status !== "playing",
+    });
+  }, [board, revealedSafe, totalSafe, versesRestored.length, verseKeys.length, hearts, maxHearts, status]);
+
+  const usedVerseKeys = useMemo(() => [...new Set(verseFragments.map((f) => f.verseKey))], [verseFragments]);
 
   if (loading) {
     return (
@@ -749,11 +985,26 @@ export function UnmaskedBoard({
           {formatTime(elapsed)}
         </span>
         <span className="text-muted-foreground">{tilesRemaining} tiles left</span>
-        <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100">
-          Verse score: {verseScore}
+        <span
+          className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+          title={
+            totalLineCredits > 0 ?
+              `Line tally: 1 credit per restored fragment (max ${totalLineCredits} on this board). Separate from the /100 score’s “Verses” row (max 30, shared by passage completion).`
+            : "Line tally from restored fragments."
+          }
+        >
+          Lines: {verseScore}
+          {totalLineCredits > 0 ? ` / ${totalLineCredits}` : ""}
         </span>
         <span className="text-xs text-muted-foreground">
-          Passages to restore: {versesLeft}/{verseKeys.length}
+          Passages: {versesRestored.length}/{verseKeys.length}
+        </span>
+        <span
+          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary"
+          title={`Live /100 score — Board ${liveScore.breakdown.board} · Verses ${liveScore.breakdown.verses} (max 30, by passages restored) · Hearts ${liveScore.breakdown.hearts}. Line tally is separate (see “Lines” badge).`}
+        >
+          <Trophy className="size-3" />
+          {finalScore != null ? `${finalScore}/100 (final)` : `${liveScore.total}/100`}
         </span>
         {status === "won" ? (
           <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
@@ -864,7 +1115,7 @@ export function UnmaskedBoard({
           <div className="ui-card-muted rounded-xl p-2 sm:p-2.5">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-foreground">Power-ups</p>
-              <span className="text-[11px] text-muted-foreground">Hover for help</span>
+              <span className="text-[11px] text-muted-foreground">Long-press for tip</span>
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-1 lg:gap-1">
               {ALL_POWER_UP_TYPES.map((type) => {
@@ -876,15 +1127,20 @@ export function UnmaskedBoard({
                 const isReady = count > 0 && status === "playing";
                 const isActive = activePowerUp === type;
                 const title =
-                  isReady ? POWER_UP_HINTS[type]
+                  isReady ? POWER_UP_HINT[type]
                   : isUsedUp ? "All charges used for this power-up on this board."
-                  : `${POWER_UP_HINTS[type]} Redeem a code to unlock.`;
+                  : `${POWER_UP_HINT[type]} Redeem a code to unlock.`;
+                const showTip = tipPowerUp === type;
                 return (
                   <div key={type} className="group relative min-w-0">
                     <div title={title}>
                       <button
                         type="button"
                         onClick={() => isReady && void handleUsePowerUp(type)}
+                        onPointerDown={() => startPowerUpTip(type)}
+                        onPointerUp={cancelPowerUpTip}
+                        onPointerLeave={cancelPowerUpTip}
+                        onPointerCancel={cancelPowerUpTip}
                         disabled={!isReady}
                         className={`relative flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-[11px] leading-tight transition ${
                           isActive ?
@@ -920,6 +1176,14 @@ export function UnmaskedBoard({
                         ) : null}
                       </button>
                     </div>
+                    {showTip ? (
+                      <div
+                        role="tooltip"
+                        className="absolute left-0 right-0 top-full z-20 mt-1 rounded-md border border-border bg-card/95 p-2 text-[10.5px] leading-snug text-foreground shadow-lg backdrop-blur"
+                      >
+                        {POWER_UP_SHORT[type]}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -928,8 +1192,22 @@ export function UnmaskedBoard({
         </aside>
 
         <div className="order-1 min-w-0 flex-1 lg:order-2">
+          {activePowerUp ? (
+            <div
+              role="status"
+              className="mx-auto mb-2 max-w-full rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-center text-[11px] font-medium text-primary"
+            >
+              {activePowerUp === "truth_radar" && pendingAxisTile != null
+                ? "Now choose Row or Column."
+                : POWER_UP_ARMED_BANNER[activePowerUp]}
+            </div>
+          ) : null}
           <div
-            className="mx-auto grid w-full gap-0.5 sm:gap-1"
+            className={`unmasked-board mx-auto grid w-full gap-0.5 rounded-lg p-1 transition sm:gap-1 ${
+              flagMode
+                ? "bg-amber-100/60 ring-2 ring-amber-300/70 dark:bg-amber-950/40 dark:ring-amber-700/60"
+                : "bg-transparent ring-0"
+            }`}
             style={{
               gridTemplateColumns: `repeat(${board.gridSize}, minmax(0, 1fr))`,
               maxWidth: `min(99vw, ${board.gridSize * cellRem}rem)`,
@@ -951,8 +1229,9 @@ export function UnmaskedBoard({
             : activePowerUp === "verse_compass" ||
               activePowerUp === "lie_pin" ||
               activePowerUp === "gentle_step");
-          const focalRevealPick =
-            "border border-primary/40 ring-1 ring-primary/30 hover:bg-primary/5";
+          /** Primary ring only on hover/active so armed power-ups do not paint the whole board. */
+          const focalRevealHover =
+            "ring-0 transition-[box-shadow,background-color] hover:ring-1 hover:ring-primary/40 hover:ring-offset-0 hover:bg-primary/5 active:ring-2 active:ring-primary/50";
 
           if (isRevealed) {
             if (isLie) {
@@ -960,7 +1239,7 @@ export function UnmaskedBoard({
                 isHighlighted && highlightMode === "truth_radar" ?
                   "animate-pulse border border-red-400 bg-red-200 dark:border-red-500 dark:bg-red-900"
                 : "bg-red-100 dark:bg-red-950"
-              } ${needsFocalTileFromGrid ? focalRevealPick : ""}`;
+              } ${needsFocalTileFromGrid ? focalRevealHover : ""}`;
               return needsFocalTileFromGrid ? (
                 <button
                   key={i}
@@ -983,7 +1262,7 @@ export function UnmaskedBoard({
                 isHighlighted && highlightMode === "verse_compass" ?
                   "ring-2 ring-violet-400 ring-offset-1 ring-offset-background dark:ring-violet-300 dark:ring-offset-background"
                 : ""
-              } ${needsFocalTileFromGrid ? focalRevealPick : ""}`;
+              } ${needsFocalTileFromGrid ? `${focalRevealHover} hover:ring-2` : ""}`;
               const verseClue =
                 tile.adjacentLies > 0 ? (
                   <span
@@ -1026,7 +1305,7 @@ export function UnmaskedBoard({
               isHighlighted && (highlightMode === "reveal" || highlightMode === "safe_opening" || highlightMode === "gentle_step") ?
                 "animate-pulse border border-emerald-400 bg-emerald-100 dark:border-emerald-600 dark:bg-emerald-950"
               : "bg-zinc-100 dark:bg-zinc-800"
-            } ${needsFocalTileFromGrid ? focalRevealPick : ""}`;
+            } ${needsFocalTileFromGrid ? focalRevealHover : ""}`;
             return needsFocalTileFromGrid ? (
               <button
                 key={i}
@@ -1062,11 +1341,6 @@ export function UnmaskedBoard({
               type="button"
               onClick={() => void handleTileClick(i)}
               onContextMenu={(e) => handleContextMenu(e, i)}
-              onMouseDown={() => handleLongPressStart(i)}
-              onMouseUp={handleLongPressEnd}
-              onMouseLeave={handleLongPressEnd}
-              onTouchStart={() => handleLongPressStart(i)}
-              onTouchEnd={handleLongPressEnd}
               disabled={status !== "playing"}
               className={`flex aspect-square min-h-0 items-center justify-center rounded border text-[0.65rem] font-medium transition sm:text-xs ${
                 isScoutPeek
@@ -1083,7 +1357,7 @@ export function UnmaskedBoard({
                       activePowerUp === "lie_pin" ||
                       activePowerUp === "gentle_step") &&
                       !isFlagged
-                    ? "border-primary/50 ring-1 ring-primary/30 hover:bg-primary/5"
+                    ? "border-border bg-muted ring-0 transition-[box-shadow,background-color,border-color] hover:border-primary/50 hover:ring-1 hover:ring-primary/30 hover:bg-primary/5 active:border-primary active:ring-2 active:ring-primary/45"
                     : isShimmer
                       ? "animate-pulse border-primary/50 bg-primary/10"
                     : isFlagged
@@ -1103,18 +1377,57 @@ export function UnmaskedBoard({
         </div>
       </div>
 
-      {status === "lost" ? (
-        <p className="text-center text-sm text-muted-foreground">
-          All hearts lost. The board above shows what was hidden. Don&apos;t let the lies define you. Use{" "}
-          <strong>New board</strong> below for a new shuffle and fresh hearts — codes you already redeemed stay
-          unlocked and your power-ups refresh.
-        </p>
-      ) : status === "won" ? (
-        <p className="text-center text-sm text-emerald-700 dark:text-emerald-300">
-          All truths revealed in {formatTime(elapsed)}! {hearts}/{maxHearts} hearts remaining, {liesHit}{" "}
-          lies hit. Verse score: {verseScore}. <strong>New board</strong> reshuffles the field; redeemed codes stay
-          saved and power-ups refresh.
-        </p>
+      {status !== "playing" ? (
+        <div
+          className={`rounded-xl border p-4 text-sm ${
+            status === "won"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
+              : "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-100"
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold">
+                {status === "won" ? "Board clear!" : "Game over."}{" "}
+                <span className="font-normal opacity-80">
+                  {status === "won"
+                    ? `Time ${formatTime(elapsed)} · ${hearts}/${maxHearts} hearts left · ${liesHit} lies hit.`
+                    : "All hearts lost. The board above shows what was hidden."}
+                </span>
+              </p>
+              <p className="mt-1 text-xs opacity-90">
+                Score{" "}
+                <strong>
+                  {finalScore != null ? finalScore : liveScore.total}/100
+                </strong>{" "}
+                — Board {scoreBreakdownSaved?.board ?? liveScore.breakdown.board} · Verses{" "}
+                {scoreBreakdownSaved?.verses ?? liveScore.breakdown.verses} · Hearts{" "}
+                {scoreBreakdownSaved?.hearts ?? liveScore.breakdown.hearts}.{" "}
+                {finalScore == null ? "Submit to record it." : "Submitted."}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSubmitScore()}
+                disabled={submitting || finalScore != null}
+                className="ui-button inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60"
+              >
+                <Trophy className="size-3.5" />
+                {finalScore != null ? "Submitted" : submitting ? "Submitting…" : "Submit score"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRetry()}
+                disabled={retrying}
+                className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+              >
+                <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
+                {retrying ? "Shuffling…" : "New board"}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {status === "playing" ? (
@@ -1140,13 +1453,6 @@ export function UnmaskedBoard({
               Redeem
             </button>
           </div>
-          {codeMsg ? (
-            <p
-              className={`mt-2 text-xs ${codeMsg.startsWith("Unlocked") ? "text-emerald-600" : "text-accent"}`}
-            >
-              {codeMsg}
-            </p>
-          ) : null}
           {redeemedCodes.length > 0 ? (
             <p className="mt-2 text-xs text-muted-foreground">
               Redeemed: {redeemedCodes.join(", ")}
@@ -1155,134 +1461,269 @@ export function UnmaskedBoard({
         </div>
       ) : null}
 
-      {availablePool.length > 0 || assemblyFragments.length > 0 ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 dark:border-amber-900 dark:bg-amber-950/40">
-          <p className="text-xs font-semibold text-amber-900 dark:text-amber-100">
-            Passage fragments (no references — use meaning & memory)
-          </p>
-          <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/90">
-            Tap the stack to move phrases into the builder row. Arrange one full passage in order, then{" "}
-            <strong>Check passage</strong> for score. Correct lines leave your stack.
-          </p>
-          {verseMsg ? (
-            <p className="mt-2 text-sm text-amber-900 dark:text-amber-100">{verseMsg}</p>
-          ) : null}
-          {lastSolvedText ? (
-            <p className="mt-2 rounded-lg border border-amber-300/80 bg-white/80 px-3 py-2 text-sm font-medium text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-50">
-              &ldquo;{lastSolvedText}&rdquo;
+      {availablePool.length > 0 ||
+      assemblyFragments.length > 0 ||
+      versesGivenUp.length > 0 ||
+      versesRestored.length > 0 ? (
+        <div className="overflow-hidden rounded-2xl border border-amber-200/90 bg-gradient-to-b from-amber-50/95 to-amber-50/70 shadow-sm dark:border-amber-800/80 dark:from-amber-950/55 dark:to-amber-950/35">
+          <div className="border-b border-amber-200/70 bg-amber-100/45 px-4 py-3.5 dark:border-amber-800/50 dark:bg-amber-950/45">
+            <p className="text-sm font-semibold tracking-tight text-amber-950 dark:text-amber-50">
+              Passage fragments
             </p>
-          ) : null}
-
-          <p className="mt-3 text-[0.7rem] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
-            Stack
-          </p>
-          <div className="mt-1 flex min-h-[2.5rem] flex-wrap gap-1.5">
-            {bankIndices.length === 0 && assemblyFragments.length === 0 ? (
-              <span className="text-xs text-amber-700 dark:text-amber-400">
-                Reveal enchanted passage tiles on the board to collect lines.
-              </span>
-            ) : null}
-            {bankIndices.map((idx) => {
-              const frag = verseFragments.find((f) => f.index === idx);
-              if (!frag) return null;
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => addToAssembly(idx)}
-                  disabled={status !== "playing"}
-                  className="rounded-lg border border-amber-400 bg-white px-2 py-1 text-left text-[0.7rem] font-medium text-amber-950 shadow-sm transition hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-50 dark:hover:bg-amber-900"
-                >
-                  {frag.text}
-                </button>
-              );
-            })}
+            <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-amber-900/88 dark:text-amber-200/88">
+              Color = same passage. After the minefield is cleared, tap fragments to add them in order, then{" "}
+              <strong>Check passage</strong> (max {MAX_VERSE_ASSEMBLY_ATTEMPTS} checks per passage).
+            </p>
+            <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-amber-900/88 dark:text-amber-200/88">
+              <strong>Two different numbers:</strong> tags show <strong>line credits</strong> (1 per fragment; longer
+              passages have more). Your <strong>/100</strong> score also has a <strong>Verses</strong> slice worth up to{" "}
+              <strong>30</strong> — that part is based on <strong>how many passages</strong> you restore, not on adding
+              these line credits. Failed checks can cost you a passage&apos;s line credits for good.
+            </p>
           </div>
 
-          <p className="mt-4 text-[0.7rem] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
-            Builder row
-          </p>
-          <div className="mt-1 flex min-h-[2.5rem] flex-wrap items-start gap-1">
-            {assemblyFragments.length === 0 ? (
-              <span className="text-xs text-amber-700 dark:text-amber-400">
-                Add phrases from the stack in the order you think is right.
-              </span>
+          <div className="space-y-4 p-4">
+            {!canAssembleVerses ? (
+              <p className="rounded-xl border border-amber-300/55 bg-amber-100/70 px-3 py-2 text-[11px] font-medium leading-snug text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/55 dark:text-amber-100">
+                Builder locked until the board is cleared (all safe tiles revealed).
+              </p>
             ) : null}
-            {assemblyFragments.map((frag, i) => (
-              <div key={`${frag.index}-${i}`} className="flex items-center gap-0.5">
-                {i > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => moveWithinAssembly(i, i - 1)}
-                    className="px-0.5 text-[0.65rem] text-amber-700 hover:text-amber-950 dark:text-amber-300"
-                    title="Move left"
-                  >
-                    &larr;
-                  </button>
+            {usedVerseKeys.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {usedVerseKeys.map((vk, i) => {
+                  const palette = VERSE_PALETTE[verseColorIndex(vk, usedVerseKeys)];
+                  const solved = solvedSet.has(vk);
+                  const given = givenUpSet.has(vk);
+                  const pts = versePtsByKey.get(vk) ?? 0;
+                  const ptsLabel =
+                    solved ? `+${pts} lines`
+                    : given ? `${pts} lines missed`
+                    : `up to ${pts} lines`;
+                  return (
+                    <span
+                      key={vk}
+                      className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-full border border-amber-200/50 px-2.5 py-1 text-[10px] font-semibold shadow-sm dark:border-amber-800/40 ${palette.bg} ${palette.text} ${solved || given ? "opacity-60" : ""}`}
+                      title={
+                        solved ?
+                          `Restored — +${pts} line credits (fragments). The bigger jump on your /100 score is usually from the “Verses” slice (up to 30), not this number.`
+                        : given ? `Answer revealed — ${pts} line credits not earned`
+                        : `Up to ${pts} line credits if you solve this passage (1 per fragment)`
+                      }
+                    >
+                      <span className={`size-2 shrink-0 rounded-full ${palette.chip}`} aria-hidden />
+                      <span className="whitespace-nowrap">Passage {i + 1}</span>
+                      <span className="font-bold opacity-95">
+                        {solved ? `· solved · ${ptsLabel}` : given ? `· revealed · ${ptsLabel}` : `· ${ptsLabel}`}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+            {usedVerseKeys.length > 0 && totalLineCredits > 0 ? (
+              <p className="text-[11px] leading-snug text-amber-800/85 dark:text-amber-300/85">
+                Tags add up to <strong>{totalLineCredits}</strong> line credits on this board. The{" "}
+                <strong>/100</strong> score&apos;s <strong>Verses</strong> slice (up to <strong>30</strong>) is separate:
+                it grows with <strong>how many passages</strong> you fully restore, not with this sum.
+              </p>
+            ) : null}
+            {lastSolvedVerse ? (
+              <div className="rounded-xl border border-emerald-300/70 bg-emerald-50/90 px-3 py-2.5 text-sm text-emerald-950 shadow-sm dark:border-emerald-800/60 dark:bg-emerald-950/50 dark:text-emerald-50">
+                {lastSolvedVerse.reference ? (
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">
+                    {lastSolvedVerse.reference}
+                  </p>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => removeFromAssembly(i)}
-                  className="rounded-lg border border-amber-500 bg-amber-100 px-2 py-1 text-left text-[0.7rem] font-medium text-amber-950 dark:border-amber-600 dark:bg-amber-900 dark:text-amber-50"
-                  title="Back to stack"
-                >
-                  {frag.text}
-                </button>
-                {i < assemblyFragments.length - 1 ? (
-                  <button
-                    type="button"
-                    onClick={() => moveWithinAssembly(i, i + 1)}
-                    className="px-0.5 text-[0.65rem] text-amber-700 hover:text-amber-950 dark:text-amber-300"
-                    title="Move right"
-                  >
-                    &rarr;
-                  </button>
+                <p className="mt-1 font-medium leading-relaxed">&ldquo;{lastSolvedVerse.full}&rdquo;</p>
+                {lastSolvedVerse.lineCredits != null && lastSolvedVerse.versesSliceDelta != null ? (
+                  <p className="mt-2 text-[11px] leading-snug text-emerald-900/90 dark:text-emerald-200/90">
+                    <strong>+{lastSolvedVerse.lineCredits}</strong> line credits (fragments) ·{" "}
+                    <strong>+{lastSolvedVerse.versesSliceDelta}</strong> on your /100 &ldquo;Verses&rdquo; score (separate
+                    number)
+                  </p>
+                ) : lastSolvedVerse.lineCredits != null ? (
+                  <p className="mt-2 text-[11px] text-emerald-900/90 dark:text-emerald-200/90">
+                    <strong>+{lastSolvedVerse.lineCredits}</strong> line credits (one per fragment)
+                  </p>
                 ) : null}
               </div>
-            ))}
-          </div>
+            ) : null}
+            {versesGivenUp.length > 0 ? (
+              <ul className="space-y-2 text-sm text-amber-950 dark:text-amber-50">
+                {versesGivenUp.map((vk) => {
+                  const entry = getVerseByKey(vk);
+                  if (!entry) return null;
+                  return (
+                    <li
+                      key={vk}
+                      className="rounded-xl border border-amber-200/85 bg-white/65 px-3 py-2 shadow-sm dark:border-amber-800 dark:bg-amber-950/80"
+                    >
+                      <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                        {entry.reference}
+                      </p>
+                      <p className="mt-0.5 text-xs leading-relaxed opacity-95">&ldquo;{entry.full}&rdquo;</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
 
-          {status === "playing" && assemblyFragments.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => void doCheckVerse()}
-              className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500"
-            >
-              Check passage
-            </button>
-          ) : null}
+            <div>
+              <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                Stack
+              </p>
+              <div className="mt-2 min-h-[2.75rem] rounded-xl border border-amber-200/70 bg-white/55 p-2.5 dark:border-amber-800/55 dark:bg-amber-950/35">
+                <div className="flex flex-wrap gap-2">
+                  {bankIndices.length === 0 && assemblyFragments.length === 0 ? (
+                    <span className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                      Reveal enchanted passage tiles on the board to collect lines.
+                    </span>
+                  ) : null}
+                  {bankIndices.map((idx) => {
+                    const frag = verseFragments.find((f) => f.index === idx);
+                    if (!frag) return null;
+                    const palette = VERSE_PALETTE[verseColorIndex(frag.verseKey, usedVerseKeys)];
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => addToAssembly(idx)}
+                        className={`max-w-full rounded-lg border px-2.5 py-1.5 text-left text-[0.7rem] font-medium shadow-sm transition hover:brightness-[0.98] active:scale-[0.99] disabled:opacity-50 dark:hover:brightness-110 ${palette.bg} ${palette.text} ${palette.ring}`}
+                      >
+                        {frag.text}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                  Builder row
+                </p>
+                {assemblyFragments.length > 1 ? (
+                  <span className="text-[10px] text-amber-700/90 dark:text-amber-400/90">
+                    Use ↑ ↓ to reorder · tap a line to return it to the stack
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-amber-700/90 dark:text-amber-400/90">
+                    Tap a line to return it to the stack
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 min-h-[2.75rem] rounded-xl border border-amber-200/70 bg-white/55 p-2.5 dark:border-amber-800/55 dark:bg-amber-950/35">
+                {assemblyFragments.length === 0 ? (
+                  <span className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                    Add phrases from the stack in the order you think is right.
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
+                    {assemblyFragments.map((frag, i) => {
+                      const palette = VERSE_PALETTE[verseColorIndex(frag.verseKey, usedVerseKeys)];
+                      const last = i === assemblyFragments.length - 1;
+                      return (
+                        <div key={`${frag.index}-${i}`} className="flex items-center gap-1.5">
+                          {i > 0 ? (
+                            <ChevronRight
+                              className="size-4 shrink-0 text-amber-400/75 dark:text-amber-500/45"
+                              aria-hidden
+                            />
+                          ) : null}
+                          <div
+                            className={`flex max-w-full min-w-0 overflow-hidden rounded-xl border shadow-sm ${palette.ring} bg-white/90 dark:bg-amber-950/50`}
+                          >
+                            <div className="flex shrink-0 flex-col self-stretch border-r border-amber-200/70 dark:border-amber-800/60">
+                              <button
+                                type="button"
+                                disabled={i === 0 || !canAssembleVerses}
+                                onClick={() => moveWithinAssembly(i, i - 1)}
+                                className="flex min-h-[1.5rem] flex-1 items-center justify-center px-1 text-amber-700 transition hover:bg-amber-100/90 disabled:cursor-not-allowed disabled:opacity-25 dark:text-amber-300 dark:hover:bg-amber-900/50"
+                                title="Earlier in sentence"
+                                aria-label="Move fragment earlier in sentence"
+                              >
+                                <ChevronUp className="size-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={last || !canAssembleVerses}
+                                onClick={() => moveWithinAssembly(i, i + 1)}
+                                className="flex min-h-[1.5rem] flex-1 items-center justify-center px-1 text-amber-700 transition hover:bg-amber-100/90 disabled:cursor-not-allowed disabled:opacity-25 dark:text-amber-300 dark:hover:bg-amber-900/50"
+                                title="Later in sentence"
+                                aria-label="Move fragment later in sentence"
+                              >
+                                <ChevronDown className="size-3.5" />
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeFromAssembly(i)}
+                              className={`min-w-0 flex-1 px-2.5 py-1.5 text-left text-[0.7rem] font-medium leading-snug ${palette.bg} ${palette.text}`}
+                              title="Back to stack"
+                            >
+                              {frag.text}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {assemblyFragments.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => void doCheckVerse()}
+                disabled={!canAssembleVerses}
+                className="w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-500 sm:w-auto disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Check passage
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
       <div className="ui-card-muted rounded-xl p-4 text-xs leading-relaxed text-foreground">
-        <p className="font-semibold text-foreground">How to Play</p>
+        <p className="font-semibold text-foreground">How to play</p>
         <ul className="mt-2 list-inside list-disc space-y-1.5">
-          <li>Tap a tile to reveal it. Numbers show adjacent lies.</li>
+          <li>Tap a tile to open it. Numbers = lies nearby.</li>
           <li>
-            Use <strong>Flag mode</strong> or <strong>long-press / right-click</strong> to flag suspected lies.
+            <strong>Flag mode</strong> tags suspected lies (or right-click on desktop).
           </li>
-          <li>Hitting a lie costs 1 heart. Lose all hearts = game over.</li>
+          <li>Hitting a lie costs 1 heart. 0 hearts = game over.</li>
           <li>
-            <strong>Enchanted passage tiles</strong> hide Scripture fragments — no book/chapter
-            hints.
-          </li>
-          <li>
-            Stack fragments below, move them into the builder row, reorder by sense, then <strong>Check passage</strong>{" "}
-            to score and clear that passage from your stack.
-          </li>
-          <li>
-            Enter <strong>power-up codes</strong> earned from physical challenges for special abilities.
+            Glowing tiles hide passage fragments. Same color = same passage. Tags show <strong>line credits</strong> per
+            passage (fragments on the board). Your <strong>/100</strong> score also has a <strong>Verses</strong> part (up
+            to 30) based on completed passages — not the same as adding line credits. After you clear the board, build
+            the order and <strong>Check passage</strong> — two tries per passage; using both without solving forfeits that
+            passage&apos;s lines and shows the text.
           </li>
           <li>
-            <strong>Safe opening</strong> (if your camp uses it) automatically reveals the biggest “clear patch” —
-            like a perfect Minesweeper first click.
-          </li>
-          <li>
-            <strong>New board</strong> reshuffles the minefield and clears hearts and verse score for a new run. Codes
-            you already redeemed stay unlocked — you don&apos;t re-enter them, and your power-ups refresh.
+            Earn power-up codes from camp stations and redeem them above.
           </li>
         </ul>
+        <p className="mt-3 rounded-md bg-primary/10 px-3 py-2 text-[11px] text-primary">
+          <strong>Tip:</strong> /100 score = up to 60 board + up to 30 for <strong>passages completed</strong> + up to 10
+          hearts. Line credits on tags are a separate tally (1 per fragment restored). Submit once your run ends.
+        </p>
       </div>
+
+      {process.env.NODE_ENV === "development" ? (
+        <button
+          type="button"
+          onClick={() => void handleDevClearMinefield()}
+          className="fixed bottom-5 right-5 z-[100] flex items-center gap-2 rounded-full border-2 border-dashed border-amber-600/80 bg-amber-100/95 px-3 py-2 text-xs font-semibold text-amber-950 shadow-lg backdrop-blur-sm hover:bg-amber-200/95 dark:border-amber-400/70 dark:bg-amber-950/95 dark:text-amber-50 dark:hover:bg-amber-900/95"
+          title="Development only: reveal every safe tile (does not auto-reveal lies)"
+          aria-label="Development: clear minefield — reveal all safe tiles"
+        >
+          <Bomb className="size-4 shrink-0" aria-hidden />
+          Dev: clear minefield
+        </button>
+      ) : null}
     </div>
   );
 }

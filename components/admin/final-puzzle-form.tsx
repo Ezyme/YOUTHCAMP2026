@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 const validators = ["normalized", "exact", "numeric", "ordered_tokens", "regex"];
 
@@ -9,10 +10,8 @@ export function FinalPuzzleForm({ sessionId }: { sessionId: string }) {
   const [validatorType, setValidatorType] = useState("normalized");
   const [pattern, setPattern] = useState("");
   const [teamId, setTeamId] = useState("");
-  const [msg, setMsg] = useState("");
 
   async function save() {
-    setMsg("");
     const validatorConfig =
       validatorType === "regex" ? { pattern } : {};
     const res = await fetch("/api/final-puzzle", {
@@ -28,10 +27,10 @@ export function FinalPuzzleForm({ sessionId }: { sessionId: string }) {
     });
     const data = await res.json();
     if (!res.ok) {
-      setMsg(data.error ?? "Failed");
+      showError(String(data.error ?? "Failed"));
       return;
     }
-    setMsg("Saved puzzle (solution stored as hash).");
+    showSuccess("Puzzle saved (solution hashed)");
   }
 
   if (!sessionId) {
@@ -88,7 +87,6 @@ export function FinalPuzzleForm({ sessionId }: { sessionId: string }) {
       >
         Save puzzle
       </button>
-      {msg ? <p className="text-xs text-muted-foreground">{msg}</p> : null}
     </div>
   );
 }

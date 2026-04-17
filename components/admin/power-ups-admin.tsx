@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import type { PowerUpType } from "@/lib/db/models";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type CodeRow = {
   _id: string;
@@ -56,7 +57,6 @@ export function PowerUpsAdmin({
   const [newType, setNewType] = useState<PowerUpType>("extra_heart");
   const [newScope, setNewScope] = useState<"universal" | "per_team">("universal");
   const [newTeamId, setNewTeamId] = useState(teams[0]?._id ?? "");
-  const [msg, setMsg] = useState("");
 
   async function load() {
     if (!sessionId) return;
@@ -73,8 +73,10 @@ export function PowerUpsAdmin({
   }, [sessionId]);
 
   async function add() {
-    setMsg("");
-    if (!newCode.trim()) { setMsg("Code is required"); return; }
+    if (!newCode.trim()) {
+      showError("Code is required");
+      return;
+    }
     const res = await fetch("/api/unmasked/codes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -87,13 +89,22 @@ export function PowerUpsAdmin({
       }),
     });
     const data = await res.json();
-    if (!res.ok) { setMsg(data.error ?? "Failed"); return; }
+    if (!res.ok) {
+      showError(String(data.error ?? "Failed to add code"));
+      return;
+    }
+    showSuccess(`Code ${String(newCode).trim().toUpperCase()} added`);
     setNewCode("");
     await load();
   }
 
   async function remove(id: string) {
-    await fetch(`/api/unmasked/codes?id=${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/unmasked/codes?id=${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      showError("Delete failed");
+      return;
+    }
+    showSuccess("Code removed");
     await load();
   }
 
@@ -163,7 +174,6 @@ export function PowerUpsAdmin({
         >
           Add code
         </button>
-        {msg ? <p className="mt-2 text-xs text-accent">{msg}</p> : null}
       </div>
 
       {/* Codes list */}
