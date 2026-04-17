@@ -26,6 +26,16 @@ import {
   MAX_VERSE_ASSEMBLY_ATTEMPTS,
   type Board,
 } from "@/lib/games/unmasked/engine";
+import {
+  applyFlagLocal,
+  applyRevealLocal,
+  type OptimisticStateSlice,
+} from "@/lib/games/unmasked/local-apply";
+import {
+  clearLocalMirror,
+  readLocalMirror,
+  writeLocalMirror,
+} from "@/lib/games/unmasked/mirror";
 import { getVerseByKey } from "@/lib/games/unmasked/verses";
 import { computeUnmaskedScore, marginalVersesSliceDelta } from "@/lib/games/unmasked/scoring";
 import type { PowerUpType } from "@/lib/db/models";
@@ -80,6 +90,18 @@ const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield 
   verse_compass: { label: "Verse Compass", icon: Compass },
   gentle_step: { label: "Gentle Step", icon: Footprints },
 };
+
+/** Scout peek kind as shown in UI / toasts (tile is still hidden). */
+function formatScoutPeekKind(kind: string): string {
+  switch (kind) {
+    case "lie":
+      return "Danger (Lie)";
+    case "verse":
+      return "Passage tile (Verse)";
+    default:
+      return "Safe (Truth)";
+  }
+}
 
 const ALL_POWER_UP_TYPES: PowerUpType[] = [
   "extra_heart",
@@ -252,7 +274,6 @@ export function UnmaskedBoard({
   } | null>(null);
   const [activePowerUp, setActivePowerUp] = useState<PowerUpType | null>(null);
   const [scoutPeek, setScoutPeek] = useState<{ index: number; kind: string } | null>(null);
-  const [liePopup, setLiePopup] = useState<{ text: string; shieldUsed: boolean } | null>(null);
   const [flagMode, setFlagMode] = useState(false);
   const [pendingAxisTile, setPendingAxisTile] = useState<number | null>(null);
   const [highlightedTiles, setHighlightedTiles] = useState<Set<number>>(new Set());
@@ -273,6 +294,47 @@ export function UnmaskedBoard({
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Prevents duplicate auto-submit; reset on new board (`reloadKey`). */
   const autoSubmitVersesRef = useRef(false);
+
+  /**
+   * Serialize background action POSTs so the server always sees clicks in the
+   * same order the user made them — even if five reveals fire inside 100ms.
+   * `pendingCountRef` lets reconcile skip work while more updates are in flight.
+   */
+  const actionQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingCountRef = useRef(0);
+
+  /**
+   * Live mirror of mutable state so background POST resolvers can read the
+   * latest values even though they were scheduled from a stale closure.
+   */
+  const latestStateRef = useRef({
+    revealed,
+    flagged,
+    hearts,
+    maxHearts,
+    liesHit,
+    shielded,
+    status,
+    powerUps,
+    versesRestored,
+    versesGivenUp,
+    verseScore,
+    verseAssemblyIndices,
+  });
+  latestStateRef.current = {
+    revealed,
+    flagged,
+    hearts,
+    maxHearts,
+    liesHit,
+    shielded,
+    status,
+    powerUps,
+    versesRestored,
+    versesGivenUp,
+    verseScore,
+    verseAssemblyIndices,
+  };
 
   const cancelPowerUpTip = useCallback(() => {
     if (tipTimer.current) {
@@ -320,6 +382,30 @@ export function UnmaskedBoard({
     (async () => {
       setLoading(true);
       setError(null);
+
+      /**
+       * Paint last-known mutable state from localStorage synchronously so the
+       * board appears in the first frame on reload. Server fetch still runs
+       * next and overwrites with authoritative state (mirror only carries
+       * slices the server will also return).
+       */
+      const mirror = readLocalMirror(sessionId, teamId);
+      if (mirror) {
+        setRevealed(new Set(mirror.revealed));
+        setFlagged(new Set(mirror.flagged));
+        setHearts(mirror.hearts);
+        setMaxHearts(mirror.maxHearts);
+        setLiesHit(mirror.liesHit);
+        setShielded(mirror.shielded);
+        setStatus(mirror.status);
+        setPowerUps(mirror.powerUps);
+        if (Array.isArray(mirror.versesRestored)) setVersesRestored(mirror.versesRestored);
+        if (Array.isArray(mirror.versesGivenUp)) setVersesGivenUp(mirror.versesGivenUp);
+        if (typeof mirror.verseScore === "number") setVerseScore(mirror.verseScore);
+        if (Array.isArray(mirror.verseAssemblyIndices))
+          setVerseAssemblyIndices(mirror.verseAssemblyIndices);
+      }
+
       try {
         const res = await fetch(
           `/api/unmasked/state?sessionId=${sessionId}&teamId=${teamId}&slug=unmasked`,
@@ -367,6 +453,21 @@ export function UnmaskedBoard({
           setFinalScore(null);
           setScoreBreakdownSaved(null);
         }
+
+        writeLocalMirror(sessionId, teamId, {
+          revealed: data.revealed,
+          flagged: data.flagged,
+          hearts: data.hearts,
+          maxHearts: data.maxHearts,
+          liesHit: data.liesHit,
+          shielded: data.shielded,
+          status: data.status,
+          powerUps: data.powerUps,
+          versesRestored: norm.restored,
+          versesGivenUp: norm.versesGivenUp,
+          verseScore: norm.score,
+          verseAssemblyIndices: norm.assembly,
+        });
       } catch {
         if (!cancelled) setError("Network error loading game state");
       }
@@ -403,6 +504,7 @@ export function UnmaskedBoard({
         setRetrying(false);
         return;
       }
+      clearLocalMirror(sessionId, teamId);
       setReloadKey((k) => k + 1);
     } finally {
       setRetrying(false);
@@ -430,21 +532,44 @@ export function UnmaskedBoard({
     [persist],
   );
 
-  const doAction = useCallback(
-    async (
-      action: string,
-      index?: number,
-      powerUpType?: PowerUpType,
-      extra?: { axis?: "row" | "col" },
-    ) => {
-      const res = await fetch("/api/unmasked/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, teamId, action, index, powerUpType, gameSlug, ...extra }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const s = data.state;
+  type ServerActionState = {
+    revealed: number[];
+    flagged: number[];
+    hearts: number;
+    maxHearts: number;
+    liesHit: number;
+    shielded: boolean;
+    powerUps: { type: PowerUpType; used: boolean }[];
+    status: "playing" | "won" | "lost";
+    versesRestored?: string[];
+    versesGivenUp?: string[];
+    verseScore?: number;
+    verseAssemblyIndices?: number[];
+  };
+
+  /**
+   * Loose shape covering every field downstream power-up/dev handlers read
+   * from the `/action` response. Matches the union returned by
+   * `applyPowerUp` + engine results without dragging those full types in.
+   */
+  type ActionResult = {
+    type?: string;
+    success?: boolean;
+    reason?: string;
+    revealedIndex?: number;
+    revealedIndices?: number[];
+    flaggedIndex?: number;
+    peekedIndex?: number;
+    peekedKind?: string;
+    openingSize?: number;
+    lineAxis?: "row" | "col";
+    anchorIndex?: number;
+  } | null;
+
+  type ServerActionResponse = { result: ActionResult; state: ServerActionState };
+
+  const applyServerState = useCallback(
+    (s: ServerActionState) => {
       setRevealed(new Set(s.revealed));
       setFlagged(new Set(s.flagged));
       setHearts(s.hearts);
@@ -459,19 +584,232 @@ export function UnmaskedBoard({
       if (Array.isArray(s.verseAssemblyIndices)) {
         setVerseAssemblyIndices(s.verseAssemblyIndices);
       }
-      return data.result;
+      writeLocalMirror(sessionId, teamId, {
+        revealed: s.revealed,
+        flagged: s.flagged,
+        hearts: s.hearts,
+        maxHearts: s.maxHearts,
+        liesHit: s.liesHit,
+        shielded: s.shielded,
+        status: s.status,
+        powerUps: s.powerUps,
+        versesRestored: s.versesRestored ?? latestStateRef.current.versesRestored,
+        versesGivenUp: s.versesGivenUp ?? latestStateRef.current.versesGivenUp,
+        verseScore: s.verseScore ?? latestStateRef.current.verseScore,
+        verseAssemblyIndices:
+          s.verseAssemblyIndices ?? latestStateRef.current.verseAssemblyIndices,
+      });
+    },
+    [sessionId, teamId],
+  );
+
+  /**
+   * Enqueue a `/action` POST so concurrent clicks hit the server in order.
+   * Resolves with the parsed response (or null on error). Callers decide
+   * whether to `await` (blocking power-ups / dev tools) or fire-and-forget
+   * (optimistic reveal/flag).
+   */
+  const enqueueServerAction = useCallback(
+    (body: Record<string, unknown>): Promise<ServerActionResponse | null> => {
+      pendingCountRef.current++;
+      const next = actionQueueRef.current.then(async () => {
+        try {
+          const res = await fetch("/api/unmasked/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, teamId, gameSlug, ...body }),
+          });
+          if (!res.ok) return null;
+          return (await res.json()) as ServerActionResponse;
+        } catch {
+          return null;
+        } finally {
+          pendingCountRef.current--;
+        }
+      });
+      actionQueueRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
     },
     [sessionId, teamId, gameSlug],
   );
 
+  /**
+   * Blocking action: waits for the server, adopts its state, returns the
+   * engine result. Used by power-ups, dev tools, and any action we don't
+   * want to run locally (server-only RNG / settings).
+   */
+  const doActionServer = useCallback(
+    async (
+      action: string,
+      index?: number,
+      powerUpType?: PowerUpType,
+      extra?: { axis?: "row" | "col" },
+    ) => {
+      const data = await enqueueServerAction({ action, index, powerUpType, ...extra });
+      if (!data) return null;
+      applyServerState(data.state);
+      return data.result;
+    },
+    [enqueueServerAction, applyServerState],
+  );
+
+  /**
+   * Compares the last-known optimistic state against the server snapshot and
+   * adopts server state if they diverge. Skipped while more POSTs are in
+   * flight (reconciling against a stale snapshot would cause flicker).
+   */
+  const maybeReconcile = useCallback(
+    (s: ServerActionState) => {
+      if (pendingCountRef.current > 0) return;
+      const latest = latestStateRef.current;
+      const diverged =
+        latest.revealed.size !== s.revealed.length ||
+        latest.flagged.size !== s.flagged.length ||
+        latest.hearts !== s.hearts ||
+        latest.liesHit !== s.liesHit ||
+        latest.shielded !== s.shielded ||
+        latest.status !== s.status;
+      if (!diverged) return;
+      applyServerState(s);
+      showWarning("Synced with server", {
+        description: "Reapplied authoritative game state.",
+        duration: 3200,
+      });
+    },
+    [applyServerState],
+  );
+
+  /**
+   * Write the optimistic slice to state + mirror in one shot.
+   * `slice` comes from the pure engine so it matches what the server will
+   * compute once the enqueued POST lands.
+   */
+  const commitOptimistic = useCallback(
+    (slice: OptimisticStateSlice) => {
+      setRevealed(new Set(slice.revealed));
+      setFlagged(new Set(slice.flagged));
+      setHearts(slice.hearts);
+      setLiesHit(slice.liesHit);
+      setShielded(slice.shielded);
+      setStatus(slice.status);
+      const prev = latestStateRef.current;
+      latestStateRef.current = {
+        ...prev,
+        revealed: new Set(slice.revealed),
+        flagged: new Set(slice.flagged),
+        hearts: slice.hearts,
+        maxHearts: slice.maxHearts,
+        liesHit: slice.liesHit,
+        shielded: slice.shielded,
+        powerUps: slice.powerUps.map((p) => ({ ...p })),
+        status: slice.status,
+      };
+      writeLocalMirror(sessionId, teamId, {
+        revealed: slice.revealed,
+        flagged: slice.flagged,
+        hearts: slice.hearts,
+        maxHearts: slice.maxHearts,
+        liesHit: slice.liesHit,
+        shielded: slice.shielded,
+        status: slice.status,
+        powerUps: slice.powerUps,
+        versesRestored: prev.versesRestored,
+        versesGivenUp: prev.versesGivenUp,
+        verseScore: prev.verseScore,
+        verseAssemblyIndices: prev.verseAssemblyIndices,
+      });
+    },
+    [sessionId, teamId],
+  );
+
+  /**
+   * Reveal a tile instantly on the client via the shared pure engine, then
+   * sync to the server in the background. Returns the engine `RevealResult`
+   * so callers can drive lie popups / flood-flash animations.
+   */
+  const doRevealOptimistic = useCallback(
+    (index: number) => {
+      if (!board) return null;
+      const latest = latestStateRef.current;
+      if (latest.status !== "playing") return { type: "game_over" as const };
+      if (latest.revealed.has(index)) return { type: "already_revealed" as const };
+      const { result, next } = applyRevealLocal(
+        {
+          board,
+          revealed: latest.revealed,
+          flagged: latest.flagged,
+          hearts: latest.hearts,
+          maxHearts: latest.maxHearts,
+          liesHit: latest.liesHit,
+          shielded: latest.shielded,
+          powerUps: latest.powerUps,
+          status: latest.status,
+        },
+        index,
+      );
+      if (
+        result.type === "already_revealed" ||
+        result.type === "flagged" ||
+        result.type === "game_over"
+      ) {
+        return result;
+      }
+      commitOptimistic(next);
+      void enqueueServerAction({ action: "reveal", index }).then((data) => {
+        if (!data) return;
+        maybeReconcile(data.state);
+      });
+      return result;
+    },
+    [board, commitOptimistic, enqueueServerAction, maybeReconcile],
+  );
+
+  /**
+   * Toggle a flag instantly on the client, then sync to the server.
+   * Returns the engine-reported flag state (true = now flagged), or null
+   * if the toggle was rejected (game over / already revealed).
+   */
+  const doFlagOptimistic = useCallback(
+    (index: number) => {
+      if (!board) return null;
+      const latest = latestStateRef.current;
+      if (latest.status !== "playing") return null;
+      const { changed, next, flaggedNow } = applyFlagLocal(
+        {
+          board,
+          revealed: latest.revealed,
+          flagged: latest.flagged,
+          hearts: latest.hearts,
+          maxHearts: latest.maxHearts,
+          liesHit: latest.liesHit,
+          shielded: latest.shielded,
+          powerUps: latest.powerUps,
+          status: latest.status,
+        },
+        index,
+      );
+      if (!changed) return null;
+      commitOptimistic(next);
+      void enqueueServerAction({ action: "flag", index }).then((data) => {
+        if (!data) return;
+        maybeReconcile(data.state);
+      });
+      return flaggedNow;
+    },
+    [board, commitOptimistic, enqueueServerAction, maybeReconcile],
+  );
+
   const handleDevClearMinefield = useCallback(async () => {
-    const r = await doAction("dev_reveal_all_safe");
+    const r = await doActionServer("dev_reveal_all_safe");
     if (r == null) {
       showError("Could not clear minefield.");
       return;
     }
     showInfo("Dev: all safe tiles revealed (minefield cleared).");
-  }, [doAction]);
+  }, [doActionServer]);
 
   /** Line credits per passage = fragment count (1 credit per line when solved); see trySolveVerseAssembly. */
   const versePtsByKey = useMemo(() => {
@@ -510,6 +848,21 @@ export function UnmaskedBoard({
       setVersesGivenUp(s.versesGivenUp ?? []);
       setVerseScore(s.verseScore ?? 0);
       setVerseAssemblyIndices(s.verseAssemblyIndices ?? []);
+      const latest = latestStateRef.current;
+      writeLocalMirror(sessionId, teamId, {
+        revealed: [...latest.revealed],
+        flagged: [...latest.flagged],
+        hearts: latest.hearts,
+        maxHearts: latest.maxHearts,
+        liesHit: latest.liesHit,
+        shielded: latest.shielded,
+        status: latest.status,
+        powerUps: latest.powerUps,
+        versesRestored: s.versesRestored ?? [],
+        versesGivenUp: s.versesGivenUp ?? [],
+        verseScore: s.verseScore ?? 0,
+        verseAssemblyIndices: s.verseAssemblyIndices ?? [],
+      });
     }
     const r = data.result;
     if (r?.ok) {
@@ -571,7 +924,7 @@ export function UnmaskedBoard({
     }
 
     if (activePowerUp === "verse_compass") {
-      const result = await doAction("use_powerup", index, "verse_compass");
+      const result = await doActionServer("use_powerup", index, "verse_compass");
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
@@ -592,7 +945,7 @@ export function UnmaskedBoard({
     }
 
     if (activePowerUp === "lie_pin") {
-      const result = await doAction("use_powerup", index, "lie_pin");
+      const result = await doActionServer("use_powerup", index, "lie_pin");
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
@@ -607,7 +960,7 @@ export function UnmaskedBoard({
     }
 
     if (activePowerUp === "gentle_step") {
-      const result = await doAction("use_powerup", index, "gentle_step");
+      const result = await doActionServer("use_powerup", index, "gentle_step");
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
@@ -622,43 +975,65 @@ export function UnmaskedBoard({
     }
 
     if (activePowerUp === "scout") {
-      const result = await doAction("use_powerup", index, "scout");
+      const result = await doActionServer("use_powerup", index, "scout");
       resetPowerUpIntent();
       if (!result) return;
-      if (!result.success) {
+      if (result.success === false) {
         showPowerUpMessage(result.reason ?? "Scout fizzled.", 4000);
         return;
       }
       if (result.peekedIndex != null) {
+        const kind = String(result.peekedKind ?? "truth");
         setScoutPeek({
           index: result.peekedIndex,
-          kind: String(result.peekedKind ?? "truth"),
+          kind,
         });
         setShimmerTile(result.peekedIndex);
         setTimeout(() => setShimmerTile(null), 1300);
         setTimeout(() => setScoutPeek(null), 3000);
+        showPowerUpMessage(
+          `Tile peeked: ${formatScoutPeekKind(kind)} — highlight fades in a few seconds.`,
+          3800,
+        );
       }
       return;
     }
 
-    if (revealed.has(index)) return;
+    if (latestStateRef.current.revealed.has(index)) return;
 
     if (flagMode) {
-      await doAction("flag", index);
+      doFlagOptimistic(index);
       return;
     }
 
-    const result = await doAction("reveal", index);
+    const result = doRevealOptimistic(index);
     if (!result) return;
+    if (
+      result.type === "already_revealed" ||
+      result.type === "flagged" ||
+      result.type === "game_over"
+    ) {
+      return;
+    }
 
     if (result.type === "lie") {
-      setLiePopup({ text: result.text, shieldUsed: result.shieldUsed });
-      setTimeout(() => setLiePopup(null), 4000);
+      const quoted = `“${result.text}”`;
+      if (result.shieldUsed) {
+        showSuccess(`Shield blocked: ${quoted}`, {
+          duration: 4000,
+          description: "Your shield protected you — no heart lost!",
+        });
+      } else {
+        showWarning(`Lie revealed: ${quoted}`, {
+          duration: 4000,
+          description: "That's a lie about your identity. God says otherwise.",
+        });
+      }
       flashTiles([index], "truth_radar", 1800);
       return;
     }
 
-    if (Array.isArray(result.floodRevealed) && result.floodRevealed.length > 0) {
+    if ("floodRevealed" in result && Array.isArray(result.floodRevealed) && result.floodRevealed.length > 0) {
       flashTiles(result.floodRevealed, "reveal", 1600);
     }
   }
@@ -667,7 +1042,7 @@ export function UnmaskedBoard({
     e.preventDefault();
     if (ARMABLE_POWER_UPS.has(activePowerUp ?? "extra_heart")) return;
     if (status === "playing" && !revealed.has(index)) {
-      void doAction("flag", index);
+      doFlagOptimistic(index);
     }
   }
 
@@ -780,7 +1155,7 @@ export function UnmaskedBoard({
       }
       return;
     }
-    const result = await doAction("use_powerup", undefined, type);
+    const result = await doActionServer("use_powerup", undefined, type);
     if (!result) return;
     if (result.success === false) {
       showPowerUpMessage(result.reason ?? `${POWER_UP_LABELS[type].label} fizzled.`, 4200);
@@ -808,7 +1183,7 @@ export function UnmaskedBoard({
 
   async function handleTruthRadarAxis(axis: "row" | "col") {
     if (pendingAxisTile == null) return;
-    const result = await doAction("use_powerup", pendingAxisTile, "truth_radar", { axis });
+    const result = await doActionServer("use_powerup", pendingAxisTile, "truth_radar", { axis });
     const origin = pendingAxisTile;
     resetPowerUpIntent();
     if (!result) return;
@@ -1034,10 +1409,10 @@ export function UnmaskedBoard({
               setFlagMode(!flagMode);
               resetPowerUpIntent();
             }}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+            className={`inline-flex touch-manipulation items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition max-lg:fixed max-lg:right-4 max-lg:z-50 max-lg:shadow-lg max-lg:ring-1 max-lg:ring-border/60 max-lg:backdrop-blur-sm max-lg:[bottom:max(1rem,env(safe-area-inset-bottom))] lg:static lg:shadow-none lg:ring-0 lg:backdrop-blur-none ${
               flagMode
-                ? "border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200"
-                : "border-border text-muted-foreground hover:bg-muted"
+                ? "border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200 max-lg:bg-amber-50/95 dark:max-lg:bg-amber-950/95"
+                : "border-border bg-background text-muted-foreground hover:bg-muted max-lg:bg-background/95"
             }`}
           >
             <Flag className="size-3.5" />
@@ -1090,23 +1465,9 @@ export function UnmaskedBoard({
         </div>
       ) : null}
 
-      {liePopup ? (
-        <div className="animate-in fade-in rounded-xl border border-red-300 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-950">
-          <p className="text-sm font-medium text-red-900 dark:text-red-100">
-            {liePopup.shieldUsed ? "Shield blocked: " : "Lie revealed: "}
-            &ldquo;{liePopup.text}&rdquo;
-          </p>
-          <p className="mt-1 text-xs text-red-700 dark:text-red-300">
-            {liePopup.shieldUsed
-              ? "Your shield protected you — no heart lost!"
-              : "That's a lie about your identity. God says otherwise."}
-          </p>
-        </div>
-      ) : null}
-
       {scoutPeek ? (
         <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
-          Tile peeked: {scoutPeek.kind === "lie" ? "Danger (Lie)" : "Safe (Truth)"} — fading in 3s...
+          Tile peeked: {formatScoutPeekKind(scoutPeek.kind)} — fading in 3s...
         </div>
       ) : null}
 
@@ -1346,6 +1707,8 @@ export function UnmaskedBoard({
                 isScoutPeek
                   ? scoutPeek.kind === "lie"
                     ? "border-red-400 bg-red-100 dark:border-red-600 dark:bg-red-950"
+                  : scoutPeek.kind === "verse"
+                    ? "border-amber-400 bg-amber-100 dark:border-amber-700 dark:bg-amber-950"
                     : "border-emerald-400 bg-emerald-100 dark:border-emerald-600 dark:bg-emerald-950"
                   : isHighlighted && highlightMode === "lie_pin"
                     ? "animate-pulse border-rose-500 bg-rose-100 dark:border-rose-500 dark:bg-rose-950/90"
