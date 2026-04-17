@@ -23,3 +23,25 @@ export function isCampGateEnabled(): boolean {
 export function isCampLoginEnforced(): boolean {
   return isCampGateEnabled();
 }
+
+const DEFAULT_LOGIN_REDIRECT = "/camp";
+
+/**
+ * Sanitize `next` from the login query string so we only redirect to same-site paths.
+ * Prevents open redirects (e.g. `next=https://evil.com`).
+ */
+export function safeCampLoginNext(raw: string | null | undefined): string {
+  if (raw == null || typeof raw !== "string") return DEFAULT_LOGIN_REDIRECT;
+  let s = raw.trim();
+  if (!s) return DEFAULT_LOGIN_REDIRECT;
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    return DEFAULT_LOGIN_REDIRECT;
+  }
+  s = s.trim();
+  if (!s.startsWith("/")) return DEFAULT_LOGIN_REDIRECT;
+  if (s.startsWith("//")) return DEFAULT_LOGIN_REDIRECT;
+  if (s.includes("://")) return DEFAULT_LOGIN_REDIRECT;
+  return s;
+}
