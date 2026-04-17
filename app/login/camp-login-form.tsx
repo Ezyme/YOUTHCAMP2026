@@ -1,14 +1,14 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Shield } from "lucide-react";
+import { safeCampLoginNext } from "@/lib/camp/auth";
 import { showError, showSuccess } from "@/lib/ui/toast";
 
 export function CampLoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/camp";
+  const next = safeCampLoginNext(searchParams.get("next"));
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,20 +16,24 @@ export function CampLoginForm() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const res = await fetch("/api/camp/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      showError(String(data.error ?? "Login failed"));
+    try {
+      const res = await fetch("/api/camp/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showError(String(data.error ?? "Login failed"));
+        return;
+      }
+      showSuccess("Welcome back!");
+      // Full navigation so the new httpOnly session cookies are always sent on the
+      // next request (avoids soft-nav edge cases) and the button cannot stay stuck.
+      window.location.assign(next);
+    } finally {
       setLoading(false);
-      return;
     }
-    showSuccess("Welcome back!");
-    router.push(next);
-    router.refresh();
   }
 
   return (
