@@ -2,16 +2,15 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type S = { _id: string; label: string; active: boolean };
 
 export function SessionsClient({ initial }: { initial: S[] }) {
   const router = useRouter();
   const [label, setLabel] = useState("New session");
-  const [msg, setMsg] = useState("");
 
   async function create() {
-    setMsg("");
     const res = await fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -19,9 +18,10 @@ export function SessionsClient({ initial }: { initial: S[] }) {
     });
     const data = await res.json();
     if (!res.ok) {
-      setMsg(data.error ?? "Failed");
+      showError(String(data.error ?? "Failed to create session"));
       return;
     }
+    showSuccess("Session created");
     router.refresh();
   }
 
@@ -44,7 +44,6 @@ export function SessionsClient({ initial }: { initial: S[] }) {
           Create session
         </button>
       </div>
-      {msg ? <p className="text-xs text-accent">{msg}</p> : null}
       <ul className="divide-y divide-border rounded-2xl border border-border bg-card">
         {initial.map((s) => (
           <li key={s._id} className="px-4 py-3 text-sm">

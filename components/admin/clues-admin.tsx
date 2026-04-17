@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type Clue = {
   _id: string;
@@ -42,7 +43,11 @@ export function CluesAdmin({
   }, [sessionId, teamId]);
 
   async function add() {
-    await fetch("/api/clues", {
+    if (!text.trim()) {
+      showError("Clue text is required");
+      return;
+    }
+    const res = await fetch("/api/clues", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -53,12 +58,23 @@ export function CluesAdmin({
         order,
       }),
     });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      showError(String(d.error ?? "Failed to add clue"));
+      return;
+    }
+    showSuccess("Clue added");
     setText("");
     load();
   }
 
   async function remove(id: string) {
-    await fetch(`/api/clues/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/clues/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      showError("Delete failed");
+      return;
+    }
+    showSuccess("Clue removed");
     load();
   }
 

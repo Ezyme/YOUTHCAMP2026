@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { EngineKey, ScoringMode } from "@/lib/db/models";
 import { IDENTITY_VERSES } from "@/lib/games/unmasked/verses";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 export type GameFormValues = {
   _id?: string;
@@ -52,7 +53,6 @@ export function GameForm({
       weight: initial?.scoring?.weight ?? 1,
     },
   });
-  const [err, setErr] = useState("");
   const isEdit = Boolean(initial?._id);
 
   function setPoint(i: number, val: string) {
@@ -63,7 +63,6 @@ export function GameForm({
   }
 
   async function save() {
-    setErr("");
     const payload = {
       name: v.name,
       slug: v.slug,
@@ -84,9 +83,10 @@ export function GameForm({
     });
     const data = await res.json();
     if (!res.ok) {
-      setErr(data.error ?? "Save failed");
+      showError(String(data.error ?? "Save failed"));
       return;
     }
+    showSuccess(isEdit ? "Game updated" : "Game created");
     router.push("/admin/games");
     router.refresh();
   }
@@ -94,7 +94,13 @@ export function GameForm({
   async function remove() {
     if (!isEdit || !initial?._id) return;
     if (!confirm("Delete this game definition?")) return;
-    await fetch(`/api/games/${initial._id}`, { method: "DELETE" });
+    const res = await fetch(`/api/games/${initial._id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showError(String(data.error ?? "Delete failed"));
+      return;
+    }
+    showSuccess("Game deleted");
     router.push("/admin/games");
     router.refresh();
   }
@@ -402,10 +408,6 @@ export function GameForm({
           onChange={(e) => setV({ ...v, rulesMarkdown: e.target.value })}
         />
       </label>
-
-      {err ? (
-        <p className="text-sm text-accent">{err}</p>
-      ) : null}
 
       <div className="flex flex-wrap gap-3">
         <button

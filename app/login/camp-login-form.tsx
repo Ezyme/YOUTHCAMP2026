@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Shield } from "lucide-react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 export function CampLoginForm() {
   const router = useRouter();
@@ -10,12 +11,10 @@ export function CampLoginForm() {
   const next = searchParams.get("next") ?? "/camp";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
     setLoading(true);
     const res = await fetch("/api/camp/login", {
       method: "POST",
@@ -24,10 +23,11 @@ export function CampLoginForm() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      setError(String(data.error ?? "Login failed"));
+      showError(String(data.error ?? "Login failed"));
       setLoading(false);
       return;
     }
+    showSuccess("Welcome back!");
     router.push(next);
     router.refresh();
   }
@@ -65,11 +65,6 @@ export function CampLoginForm() {
             className="ui-field mt-1 w-full rounded-xl px-4 py-3 text-sm"
           />
         </label>
-        {error ? (
-          <p className="rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm text-accent">
-            {error}
-          </p>
-        ) : null}
         <button
           type="submit"
           disabled={loading}

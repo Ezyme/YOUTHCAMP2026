@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Pencil, Trash2, Plus, Key } from "lucide-react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type TeamRow = { _id: string; name: string; color: string; loginUsername?: string };
 
@@ -15,7 +16,6 @@ export function TeamsClient({
 }) {
   const router = useRouter();
   const [teams, setTeams] = useState<TeamRow[]>(initialTeams);
-  const [msg, setMsg] = useState("");
 
   const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -27,7 +27,6 @@ export function TeamsClient({
   const [showAdd, setShowAdd] = useState(false);
 
   const [password, setPassword] = useState("");
-  const [pwMsg, setPwMsg] = useState("");
 
   async function reload() {
     const res = await fetch(`/api/teams?sessionId=${sessionId}`);
@@ -39,15 +38,21 @@ export function TeamsClient({
   }
 
   async function bootstrap() {
-    setMsg("");
-    if (!sessionId) { setMsg("Create a session first"); return; }
+    if (!sessionId) {
+      showError("Create a session first");
+      return;
+    }
     const res = await fetch("/api/teams", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, bootstrap: true }),
     });
     const data = await res.json();
-    if (!res.ok) { setMsg(data.error ?? "Failed"); return; }
+    if (!res.ok) {
+      showError(String(data.error ?? "Failed"));
+      return;
+    }
+    showSuccess("Teams bootstrapped");
     await reload();
   }
 
@@ -60,7 +65,6 @@ export function TeamsClient({
 
   async function saveEdit() {
     if (!editId) return;
-    setMsg("");
     const res = await fetch(`/api/teams/${editId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -72,16 +76,16 @@ export function TeamsClient({
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      setMsg(d.error ?? "Save failed");
+      showError(String(d.error ?? "Save failed"));
       return;
     }
+    showSuccess("Team updated");
     setEditId(null);
     await reload();
   }
 
   async function addTeam() {
     if (!newName.trim()) return;
-    setMsg("");
     const res = await fetch("/api/teams", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -94,9 +98,10 @@ export function TeamsClient({
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      setMsg(d.error ?? "Failed");
+      showError(String(d.error ?? "Failed"));
       return;
     }
+    showSuccess("Team added");
     setNewName("");
     setNewUsername("");
     setShowAdd(false);
@@ -105,14 +110,19 @@ export function TeamsClient({
 
   async function removeTeam(id: string) {
     if (!confirm("Delete this team?")) return;
-    await fetch(`/api/teams/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/teams/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      showError(String(d.error ?? "Delete failed"));
+      return;
+    }
+    showSuccess("Team deleted");
     await reload();
   }
 
   async function updatePassword() {
-    setPwMsg("");
     if (!password || password.length < 3) {
-      setPwMsg("Password must be at least 3 characters");
+      showError("Password must be at least 3 characters");
       return;
     }
     const res = await fetch("/api/teams", {
@@ -121,8 +131,11 @@ export function TeamsClient({
       body: JSON.stringify({ sessionId, password }),
     });
     const d = await res.json();
-    if (!res.ok) { setPwMsg(d.error ?? "Failed"); return; }
-    setPwMsg(`Password updated for ${d.updated} teams`);
+    if (!res.ok) {
+      showError(String(d.error ?? "Failed"));
+      return;
+    }
+    showSuccess(`Password updated for ${d.updated} teams`);
     setPassword("");
   }
 
@@ -163,13 +176,6 @@ export function TeamsClient({
             Update
           </button>
         </div>
-        {pwMsg ? (
-          <p
-            className={`mt-2 text-xs ${pwMsg.includes("updated") ? "text-emerald-600" : "text-accent"}`}
-          >
-            {pwMsg}
-          </p>
-        ) : null}
       </div>
 
       {/* Bootstrap + Add buttons */}
@@ -225,8 +231,6 @@ export function TeamsClient({
           </button>
         </div>
       ) : null}
-
-      {msg ? <p className="text-xs text-accent">{msg}</p> : null}
 
       {/* Team list */}
       <ul className="space-y-2">

@@ -9,6 +9,7 @@ import {
   Skull,
   ChevronRight,
 } from "lucide-react";
+import { showError, showSuccess } from "@/lib/ui/toast";
 
 type Clue = {
   _id: string;
@@ -72,16 +73,20 @@ export function FinalSolvingPlay({
       });
       const data = await res.json();
       if (!res.ok) {
-        setMsg(data.error ?? "Error");
+        const err = String(data.error ?? "Error");
+        setMsg(err);
         setStatus("fail");
+        showError(err);
         return;
       }
       if (data.ok) {
         setMsg("GAME CLEARED — answer accepted.");
         setStatus("success");
+        showSuccess("Answer accepted — game cleared!");
       } else {
         setMsg("DENIED — synthesis incorrect. Re-read your fragments.");
         setStatus("fail");
+        showError("Incorrect — re-read your fragments.");
       }
     } finally {
       setLoading(false);

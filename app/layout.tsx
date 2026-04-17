@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Bebas_Neue, Montserrat, Geist_Mono } from "next/font/google";
+import { Toaster } from "sonner";
 import { SiteHeader } from "@/components/site-header";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
@@ -40,6 +41,13 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <SiteHeader />
           <div className="flex flex-1 flex-col">{children}</div>
+          <Toaster
+            position="top-center"
+            visibleToasts={2}
+            richColors
+            closeButton
+            toastOptions={{ className: "text-sm" }}
+          />
         </ThemeProvider>
       </body>
     </html>
