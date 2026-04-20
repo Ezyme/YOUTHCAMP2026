@@ -30,8 +30,9 @@ export default async function LeaderboardPage() {
         Leaderboard
       </h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        Session: {session.label}. Totals are the sum of published per-game
-        points. Expand a team for the breakdown.
+        Session: {session.label}. Totals follow the /100 rubric: merit 5%, team
+        games 25%, Amazing Race 30%, flag 10%, cheer 10%, group skit 20%. Expand
+        a team for the breakdown.
       </p>
       <ol className="mt-6 space-y-3">
         {rows.map((r, i) => (

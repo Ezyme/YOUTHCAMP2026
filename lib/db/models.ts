@@ -1,13 +1,19 @@
 import mongoose, { Schema, type Model, type Types } from "mongoose";
 
-export type EngineKey = "mindgame" | "final_solving" | "unmasked" | "config_only";
-export type ScoringMode = "placement_points" | "amazing_race_finish";
+export type EngineKey = "mindgame" | "unmasked" | "config_only";
+export type ScoringMode =
+  | "placement_points"
+  | "amazing_race_finish"
+  | "amazing_race_first_only"
+  | "manual_points";
 
 export interface GameScoring {
   maxPlacements: number;
   scoringMode: ScoringMode;
   placementPoints: number[];
   weight: number;
+  /** Camp /100 slice — max points you can assign per team (Flag/Cheer 10, Presentation 20). */
+  manualPointsMax?: number;
 }
 
 export interface IGameDefinition {
@@ -40,30 +46,6 @@ export interface ITeam {
   loginUsername?: string;
   /** bcrypt hash; never send to client. */
   passwordHash?: string;
-}
-
-export interface IClue {
-  teamId: Types.ObjectId;
-  sessionId: Types.ObjectId;
-  sourceGameSlug: string;
-  text: string;
-  order: number;
-  revealedAt?: Date;
-}
-
-export type ValidatorType =
-  | "exact"
-  | "normalized"
-  | "regex"
-  | "ordered_tokens"
-  | "numeric";
-
-export interface IFinalPuzzle {
-  sessionId: Types.ObjectId;
-  teamId?: Types.ObjectId;
-  validatorType: ValidatorType;
-  validatorConfig: Record<string, unknown>;
-  solutionHash: string;
 }
 
 export interface IMindgameState {
@@ -164,8 +146,14 @@ export interface IUnmaskedState {
   status: "playing" | "won" | "lost";
   liesHit: number;
   startedAt: Date;
+  /** Last time this team touched the game from play (GET state / actions). Admin does not bump. */
+  lastPlayActivityAt?: Date | null;
   finishedAt?: Date;
-  /** Final 0-100 score once the player submits at end-of-game. */
+  /** True once every passage on the current board is assembled correctly (minefield + verses). */
+  passagesComplete?: boolean;
+  /** Sum of penalty seconds from wrong “Check passage” attempts (add to displayed clock). */
+  checkPassagePenaltySeconds?: number;
+  /** @deprecated Removed from play — legacy documents may still have values. */
   finalScore?: number;
   /** Breakdown mirroring the weighted components of `finalScore`. */
   scoreBreakdown?: { board: number; verses: number; hearts: number };
@@ -204,7 +192,7 @@ const GameDefinitionSchema = new Schema<IGameDefinition>(
     engineKey: {
       type: String,
       required: true,
-      enum: ["mindgame", "final_solving", "unmasked", "config_only"],
+      enum: ["mindgame", "unmasked", "config_only"],
     },
     settings: { type: Schema.Types.Mixed, default: {} },
     scoring: {
@@ -212,7 +200,12 @@ const GameDefinitionSchema = new Schema<IGameDefinition>(
         maxPlacements: { type: Number, default: 6 },
         scoringMode: {
           type: String,
-          enum: ["placement_points", "amazing_race_finish"],
+          enum: [
+            "placement_points",
+            "amazing_race_finish",
+            "amazing_race_first_only",
+            "manual_points",
+          ],
           default: "placement_points",
         },
         placementPoints: {
@@ -226,6 +219,7 @@ const GameDefinitionSchema = new Schema<IGameDefinition>(
           },
         },
         weight: { type: Number, default: 1, min: 0 },
+        manualPointsMax: { type: Number, min: 0, max: 100 },
       },
       default: defaultScoring,
     },
@@ -274,56 +268,16 @@ const TeamSchema = new Schema<ITeam>(
 );
 
 TeamSchema.index({ sessionId: 1, sortOrder: 1 });
+/** Unique login per session only when username is set (non-empty). Sparse unique on
+ *  `{ sessionId, loginUsername}` incorrectly treats multiple missing `loginUsername` as
+ *  duplicate `(sessionId, null)` and blocks bootstrapping multiple teams. */
 TeamSchema.index(
   { sessionId: 1, loginUsername: 1 },
-  { unique: true, sparse: true },
-);
-
-const ClueSchema = new Schema<IClue>(
   {
-    teamId: {
-      type: Schema.Types.ObjectId,
-      ref: "Team",
-      required: true,
-      index: true,
-    },
-    sessionId: {
-      type: Schema.Types.ObjectId,
-      ref: "Session",
-      required: true,
-      index: true,
-    },
-    sourceGameSlug: { type: String, required: true },
-    text: { type: String, required: true },
-    order: { type: Number, default: 0 },
-    revealedAt: Date,
+    unique: true,
+    partialFilterExpression: { loginUsername: { $gt: "" } },
   },
-  { timestamps: true },
 );
-
-ClueSchema.index({ teamId: 1, sessionId: 1, order: 1 });
-
-const FinalPuzzleSchema = new Schema<IFinalPuzzle>(
-  {
-    sessionId: {
-      type: Schema.Types.ObjectId,
-      ref: "Session",
-      required: true,
-      index: true,
-    },
-    teamId: { type: Schema.Types.ObjectId, ref: "Team", default: null },
-    validatorType: {
-      type: String,
-      required: true,
-      enum: ["exact", "normalized", "regex", "ordered_tokens", "numeric"],
-    },
-    validatorConfig: { type: Schema.Types.Mixed, default: {} },
-    solutionHash: { type: String, required: true },
-  },
-  { timestamps: true },
-);
-
-FinalPuzzleSchema.index({ sessionId: 1, teamId: 1 });
 
 const MindgameStateSchema = new Schema<IMindgameState>(
   {
@@ -440,7 +394,10 @@ const UnmaskedStateSchema = new Schema<IUnmaskedState>(
     },
     liesHit: { type: Number, default: 0 },
     startedAt: { type: Date, default: Date.now },
+    lastPlayActivityAt: { type: Date },
     finishedAt: Date,
+    passagesComplete: { type: Boolean, default: false },
+    checkPassagePenaltySeconds: { type: Number, default: 0 },
     finalScore: { type: Number },
     scoreBreakdown: {
       type: new Schema(
@@ -503,13 +460,6 @@ export const Session: Model<ISession> =
 
 export const Team: Model<ITeam> =
   mongoose.models.Team || mongoose.model<ITeam>("Team", TeamSchema);
-
-export const Clue: Model<IClue> =
-  mongoose.models.Clue || mongoose.model<IClue>("Clue", ClueSchema);
-
-export const FinalPuzzle: Model<IFinalPuzzle> =
-  mongoose.models.FinalPuzzle ||
-  mongoose.model<IFinalPuzzle>("FinalPuzzle", FinalPuzzleSchema);
 
 export const MindgameState: Model<IMindgameState> =
   mongoose.models.MindgameState ||

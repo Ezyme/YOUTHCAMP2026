@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { dbConnect } from "@/lib/db/connect";
 import { GameDefinition, Session, Team } from "@/lib/db/models";
 import { CAMP_GAMES, scoringForSeed } from "@/lib/seed/camp-games";
-import { syncFinalPuzzleAndClues } from "@/lib/seed/sync-final-demo";
 import { syncTeamLoginsForSession } from "@/lib/seed/sync-team-logins";
 
 export async function POST(req: Request) {
@@ -62,21 +61,13 @@ export async function POST(req: Request) {
 
     const { usernames } = await syncTeamLoginsForSession(session._id);
 
-    const { finalPuzzleUpserted, cluesUpserted } = await syncFinalPuzzleAndClues(
-      session._id,
-    );
-
     return NextResponse.json({
       ok: true,
       gamesUpserted: createdGames,
       sessionId: String(session._id),
       teamLoginUsernames: usernames,
-      finalPuzzleUpserted,
-      cluesUpserted,
       teamPasswordNote:
         "All teams share the password from TEAM_SEED_PASSWORD (default: youthcamp). Usernames: team1 … team6.",
-      finalDemoNote:
-        "Global Final puzzle + per-team clue chain were upserted (normalized validator). Replace via Admin if you use a different finale answer.",
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Error";

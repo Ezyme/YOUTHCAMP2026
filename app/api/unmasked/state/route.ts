@@ -2,14 +2,10 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { CAMP_AUTH_COOKIE, isCampGateEnabled } from "@/lib/camp/auth";
 import { dbConnect } from "@/lib/db/connect";
-import {
-  GameDefinition,
-  PowerUpCode,
-  UnmaskedState,
-  type PowerUpType,
-} from "@/lib/db/models";
-import { powerUpEntriesForRedemption } from "@/lib/games/unmasked/redeem-grants";
+import { GameDefinition, UnmaskedState } from "@/lib/db/models";
+import { migrateLegacyUnmaskedState } from "@/lib/games/unmasked/migrate-legacy-unmasked";
 import { planUnmaskedLayout } from "@/lib/games/unmasked/plan-layout";
+import { resetUnmaskedBoardKeepTimer } from "@/lib/games/unmasked/reset-board";
 import mongoose from "mongoose";
 
 async function requireAuth(): Promise<boolean> {
@@ -65,6 +61,8 @@ function buildUnmaskedPartialUpdate(body: Record<string, unknown>): UnmaskedPart
   copyIfPresent("shielded");
   copyIfPresent("status");
   copyIfPresent("liesHit");
+  copyIfPresent("passagesComplete");
+  copyIfPresent("checkPassagePenaltySeconds");
   copyIfPresent("finalScore");
   copyIfPresent("scoreBreakdown");
 
@@ -88,60 +86,6 @@ function buildUnmaskedPartialUpdate(body: Record<string, unknown>): UnmaskedPart
   return hasUnset ? { $set, $unset } : { $set };
 }
 
-/** Patch legacy saves (single verse, missing verseKey on fragments). */
-async function migrateLegacyUnmaskedState(
-  doc: Record<string, unknown> & { _id: mongoose.Types.ObjectId },
-): Promise<void> {
-  const verseKey = doc.verseKey as string | undefined;
-  const verseKeys = (doc.verseKeys as string[] | undefined) ?? [];
-  const frags = (doc.verseFragments as { index: number; text: string; order: number; verseKey?: string }[]) ?? [];
-  const needsKeys = verseKeys.length === 0 && verseKey;
-  const needsFragKey = frags.some((f) => !f.verseKey);
-  const needsAssemblyField =
-    !(doc.verseAssemblyIndices as number[] | undefined)?.length &&
-    (doc.verseAssembly as number[] | undefined)?.length;
-  const needsRestored =
-    !(doc.versesRestored as string[] | undefined)?.length && doc.verseCompleted && verseKey;
-
-  if (!needsKeys && !needsFragKey && !needsAssemblyField && !needsRestored) return;
-
-  let keys = verseKeys.length > 0 ? verseKeys : verseKey ? [verseKey] : [];
-  const patchedFrags = frags.map((f) => ({
-    index: f.index,
-    text: f.text,
-    order: f.order,
-    verseKey: f.verseKey ?? keys[0] ?? "unknown",
-  }));
-  if (keys.length === 0 && patchedFrags.length > 0) {
-    keys = [...new Set(patchedFrags.map((f) => f.verseKey))];
-  }
-  const assembly =
-    (doc.verseAssemblyIndices as number[] | undefined)?.length ?
-      (doc.verseAssemblyIndices as number[])
-    : (doc.verseAssembly as number[]) ?? [];
-  let restored = (doc.versesRestored as string[] | undefined) ?? [];
-  if (!restored.length && doc.verseCompleted && verseKey) {
-    restored = [verseKey];
-  }
-  let score = Number(doc.verseScore ?? 0);
-  if (score === 0 && doc.verseCompleted && verseKey) {
-    score = patchedFrags.filter((f) => f.verseKey === verseKey).length;
-  }
-
-  await UnmaskedState.updateOne(
-    { _id: doc._id },
-    {
-      $set: {
-        verseKeys: keys,
-        verseFragments: patchedFrags,
-        verseAssemblyIndices: assembly,
-        versesRestored: restored,
-        verseScore: score,
-      },
-    },
-  );
-}
-
 export async function GET(req: Request) {
   try {
     if (!(await requireAuth())) {
@@ -161,7 +105,11 @@ export async function GET(req: Request) {
       await migrateLegacyUnmaskedState(
         state as unknown as Record<string, unknown> & { _id: mongoose.Types.ObjectId },
       );
-      state = await UnmaskedState.findOne({ sessionId, teamId }).lean();
+      state = await UnmaskedState.findOneAndUpdate(
+        { sessionId, teamId },
+        { $set: { lastPlayActivityAt: new Date() } },
+        { new: true },
+      ).lean();
       return NextResponse.json(state);
     }
 
@@ -195,8 +143,10 @@ export async function GET(req: Request) {
           shielded: false,
           status: "playing",
           liesHit: 0,
+          passagesComplete: false,
           startedAt: new Date(),
         },
+        $set: { lastPlayActivityAt: new Date() },
       },
       { upsert: true, new: true },
     ).lean();
@@ -224,86 +174,16 @@ export async function POST(req: Request) {
     if (body.reset === true) {
       const slug = String(body.slug ?? "unmasked");
       const existing = await UnmaskedState.findOne({ sessionId, teamId }).lean();
-      if (!existing) {
+      if (existing?.passagesComplete === true) {
+        return NextResponse.json(
+          { error: "This run is complete — starting a new board is disabled." },
+          { status: 403 },
+        );
+      }
+      const doc = await resetUnmaskedBoardKeepTimer(sessionId, teamId, slug);
+      if (!doc) {
         return NextResponse.json({ error: "No game to reset — open the game once first" }, { status: 404 });
       }
-
-      const game = await GameDefinition.findOne({ slug }).lean();
-      const settings = (game?.settings ?? {}) as Record<string, unknown>;
-      const freshSeed =
-        (Math.floor(Math.random() * 0x7fff_ffff) ^ Date.now()) % 0x7fff_ffff;
-      const layout = planUnmaskedLayout(settings, freshSeed);
-
-      const keptRedeemed = (existing.redeemedCodes as string[] | undefined) ?? [];
-      const freshPowerUps: { type: PowerUpType; used: boolean }[] = [];
-      let bonusHearts = 0;
-      let bonusShield = false;
-      if (keptRedeemed.length > 0) {
-        const upperCodes = keptRedeemed.map((c) => String(c).trim().toUpperCase()).filter(Boolean);
-        const unique = [...new Set(upperCodes)];
-        const codeRows = await PowerUpCode.find({
-          sessionId,
-          code: { $in: unique },
-        })
-          .select({ code: 1, powerUpType: 1 })
-          .lean();
-        const typeByCode = new Map<string, PowerUpType>();
-        for (const row of codeRows) {
-          typeByCode.set(String(row.code).toUpperCase(), row.powerUpType as PowerUpType);
-        }
-        for (const raw of keptRedeemed) {
-          const u = String(raw).trim().toUpperCase();
-          const t = typeByCode.get(u);
-          if (!t) continue;
-          const entries = powerUpEntriesForRedemption(t);
-          if (t === "extra_heart") {
-            // Auto-apply: 1 charge = +1 max heart (and +1 current). Mark entries used.
-            bonusHearts += entries.length;
-            for (const e of entries) freshPowerUps.push({ ...e, used: true });
-          } else if (t === "shield") {
-            bonusShield = true;
-            for (const e of entries) freshPowerUps.push({ ...e, used: true });
-          } else {
-            freshPowerUps.push(...entries);
-          }
-        }
-      }
-
-      const doc = await UnmaskedState.findOneAndUpdate(
-        { sessionId, teamId },
-        {
-          $set: {
-            seed: layout.seed,
-            gridSize: layout.gridSize,
-            totalLies: layout.totalLies,
-            verseKeys: layout.verseKeys,
-            verseFragments: layout.verseFragments,
-            revealed: [],
-            flagged: [],
-            hearts: 3 + bonusHearts,
-            maxHearts: 3 + bonusHearts,
-            verseAssemblyIndices: [],
-            versesRestored: [],
-            verseCheckAttemptsByKey: {},
-            versesGivenUp: [],
-            verseScore: 0,
-            redeemedCodes: keptRedeemed,
-            powerUps: freshPowerUps,
-            shielded: bonusShield,
-            status: "playing",
-            liesHit: 0,
-            startedAt: new Date(),
-          },
-          $unset: {
-            finishedAt: 1,
-            finalScore: 1,
-            scoreBreakdown: 1,
-            submittedAt: 1,
-          },
-        },
-        { new: true },
-      ).lean();
-
       return NextResponse.json(doc);
     }
 
@@ -315,7 +195,11 @@ export async function POST(req: Request) {
     }
 
     const updateDoc: Record<string, unknown> = {};
-    if (hasSet) updateDoc.$set = partial.$set;
+    if (hasSet) {
+      updateDoc.$set = { ...partial.$set, lastPlayActivityAt: new Date() };
+    } else {
+      updateDoc.$set = { lastPlayActivityAt: new Date() };
+    }
     if (hasUnset && partial.$unset) updateDoc.$unset = partial.$unset;
 
     const doc = await UnmaskedState.findOneAndUpdate({ sessionId, teamId }, updateDoc, {

@@ -3,12 +3,10 @@ import Link from "next/link";
 const adminLinks = [
   { href: "/admin", label: "Dashboard" },
   { href: "/admin/games", label: "Games" },
-  { href: "/admin/sessions", label: "Sessions" },
   { href: "/admin/teams", label: "Teams" },
   { href: "/admin/scoring", label: "Scoring" },
-  { href: "/admin/clues", label: "Clues" },
+  { href: "/admin/unmasked", label: "Unmasked" },
   { href: "/admin/power-ups", label: "Power-ups" },
-  { href: "/admin/final-puzzle", label: "Final puzzle" },
 ];
 
 export default function AdminPanelLayout({

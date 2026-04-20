@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { Team } from "@/lib/db/models";
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -33,5 +34,9 @@ export async function dbConnect(): Promise<typeof mongoose> {
     cache.promise = mongoose.connect(MONGODB_URI);
   }
   cache.conn = await cache.promise;
+  // Migrate Team login index (sparse → partial) so bootstrap can insert 6 rows before sync.
+  await Team.syncIndexes().catch((err) => {
+    console.warn("[db] Team.syncIndexes:", err);
+  });
   return cache.conn;
 }

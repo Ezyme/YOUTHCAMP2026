@@ -5,7 +5,6 @@ import { dbConnect } from "@/lib/db/connect";
 import { CAMP_TEAM_COOKIE } from "@/lib/camp/auth";
 import { GameDefinition, Session, Team } from "@/lib/db/models";
 import { MindgameBoard } from "@/components/games/mindgame/mindgame-board";
-import { FinalSolvingPlay } from "@/components/games/final-solving/final-solving-play";
 import { UnmaskedBoard } from "@/components/games/unmasked/unmasked-board";
 import mongoose from "mongoose";
 import { ensureGameDefinitionBySlug } from "@/lib/seed/ensure-game-definition";
@@ -52,36 +51,18 @@ export default async function PlayGamePage({ params, searchParams }: Props) {
     }
   }
 
-  const isFinalSolving = game.engineKey === "final_solving";
-
   return (
-    <main
-      className={
-        isFinalSolving
-          ? "mx-auto w-full max-w-4xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
-          : "mx-auto w-full max-w-2xl flex-1 px-4 py-8 sm:px-6"
-      }
-    >
-      {!isFinalSolving ? (
-        <>
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Play · Day {game.day}
-          </p>
-          <h1 className="mt-2 text-2xl font-semibold text-foreground">
-            {game.name}
-          </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {game.rulesMarkdown?.slice(0, 200)}
-            {game.rulesMarkdown && game.rulesMarkdown.length > 200 ? "…" : ""}
-          </p>
-        </>
-      ) : (
-        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Play · Day {game.day} · {game.name}
-        </p>
-      )}
+    <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-8 sm:px-6">
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        Play · Day {game.day}
+      </p>
+      <h1 className="mt-2 text-2xl font-semibold text-foreground">{game.name}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {game.rulesMarkdown?.slice(0, 200)}
+        {game.rulesMarkdown && game.rulesMarkdown.length > 200 ? "…" : ""}
+      </p>
 
-      <div className={isFinalSolving ? "mt-4" : "mt-8"}>
+      <div className="mt-8">
         {game.engineKey === "mindgame" ? (
           <MindgameBoard
             sessionId={sessionId || undefined}
@@ -94,12 +75,6 @@ export default async function PlayGamePage({ params, searchParams }: Props) {
             teamId={defaultTeamId}
             groupLabel={playTeamName || undefined}
             gameSlug={game.slug}
-          />
-        ) : game.engineKey === "final_solving" ? (
-          <FinalSolvingPlay
-            sessionId={sessionId}
-            teamId={defaultTeamId}
-            teamName={playTeamName || undefined}
           />
         ) : (
           <div className="rounded-xl border border-dashed border-border bg-card/50 p-6 text-sm text-muted-foreground">

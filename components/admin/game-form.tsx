@@ -22,6 +22,7 @@ export type GameFormValues = {
     scoringMode: ScoringMode;
     placementPoints: number[];
     weight: number;
+    manualPointsMax?: number;
   };
 };
 
@@ -51,6 +52,7 @@ export function GameForm({
         ? [...initial.scoring.placementPoints]
         : [...emptyPoints],
       weight: initial?.scoring?.weight ?? 1,
+      manualPointsMax: initial?.scoring?.manualPointsMax,
     },
   });
   const isEdit = Boolean(initial?._id);
@@ -156,7 +158,6 @@ export function GameForm({
             <option value="config_only">config_only</option>
             <option value="mindgame">mindgame</option>
             <option value="unmasked">unmasked</option>
-            <option value="final_solving">final_solving</option>
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
@@ -362,8 +363,38 @@ export function GameForm({
           >
             <option value="placement_points">placement_points</option>
             <option value="amazing_race_finish">amazing_race_finish</option>
+            <option value="amazing_race_first_only">
+              amazing_race_first_only (only 1st earns pts)
+            </option>
+            <option value="manual_points">
+              manual_points (per-team score, max below)
+            </option>
           </select>
         </label>
+        {v.scoring.scoringMode === "manual_points" ? (
+          <label className="mt-3 block text-sm">
+            <span className="text-muted-foreground">
+              Max points per team (/100 slice)
+            </span>
+            <input
+              type="number"
+              step={0.5}
+              min={0}
+              max={100}
+              className="ui-field mt-1 w-full max-w-xs rounded-lg px-3 py-2 text-sm"
+              value={v.scoring.manualPointsMax ?? 10}
+              onChange={(e) =>
+                setV({
+                  ...v,
+                  scoring: {
+                    ...v.scoring,
+                    manualPointsMax: Number(e.target.value),
+                  },
+                })
+              }
+            />
+          </label>
+        ) : null}
         <label className="mt-3 block text-sm">
           <span className="text-muted-foreground">Weight multiplier</span>
           <input
@@ -383,20 +414,29 @@ export function GameForm({
             }
           />
         </label>
-        <p className="mt-3 text-xs text-muted-foreground">Points 1st → 6th</p>
-        <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
-          {v.scoring.placementPoints.map((p, i) => (
-            <label key={i} className="text-xs">
-              #{i + 1}
-              <input
-                type="number"
-                className="ui-field mt-1 w-full rounded px-2 py-1 text-xs"
-                value={p}
-                onChange={(e) => setPoint(i, e.target.value)}
-              />
-            </label>
-          ))}
-        </div>
+        {v.scoring.scoringMode !== "manual_points" ? (
+          <>
+            <p className="mt-3 text-xs text-muted-foreground">Points 1st → 6th</p>
+            <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {v.scoring.placementPoints.map((p, i) => (
+                <label key={i} className="text-xs">
+                  #{i + 1}
+                  <input
+                    type="number"
+                    className="ui-field mt-1 w-full rounded px-2 py-1 text-xs"
+                    value={p}
+                    onChange={(e) => setPoint(i, e.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Placement row is unused for manual_points — scores are entered per
+            team in Scoring.
+          </p>
+        )}
       </div>
 
       <label className="block text-sm">

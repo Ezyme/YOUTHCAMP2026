@@ -10,6 +10,16 @@ export async function POST(req: Request) {
   const username = String(body.username ?? "").trim().toLowerCase();
   const password = String(body.password ?? "");
 
+  if (isCampGateEnabled()) {
+    const jarEarly = await cookies();
+    if (jarEarly.get(CAMP_AUTH_COOKIE)?.value === "1") {
+      return NextResponse.json({
+        ok: true,
+        alreadyAuthenticated: true,
+      });
+    }
+  }
+
   if (!isCampGateEnabled()) {
     const jar = await cookies();
     jar.set(CAMP_AUTH_COOKIE, "1", {

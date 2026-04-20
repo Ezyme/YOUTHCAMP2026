@@ -167,24 +167,6 @@ main h3 {
   }
 }
 
-@keyframes verse-magic-shimmer-dark {
-  0%,
-  100% {
-    background-position: 0% 40%;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.06),
-      0 0 0 1px rgba(139, 92, 246, 0.45),
-      0 0 18px rgba(88, 28, 135, 0.45);
-  }
-  50% {
-    background-position: 100% 60%;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.1),
-      0 0 0 1px rgba(34, 211, 238, 0.22),
-      0 0 22px rgba(124, 58, 237, 0.35);
-  }
-}
-
 .verse-magic-tile {
   background-image: linear-gradient(
     125deg,
@@ -195,18 +177,6 @@ main h3 {
   );
   background-size: 180% 180%;
   animation: verse-magic-shimmer 3.5s ease-in-out infinite;
-}
-
-.dark .verse-magic-tile {
-  background-image: linear-gradient(
-    125deg,
-    #4c1d95 0%,
-    #312e81 30%,
-    #581c87 65%,
-    #0e7490 100%
-  );
-  background-size: 180% 180%;
-  animation: verse-magic-shimmer-dark 3.5s ease-in-out infinite;
 }
 
 /* Unmasked: lock the board against accidental mobile gestures.

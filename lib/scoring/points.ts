@@ -1,5 +1,41 @@
 import type { GameScoring } from "@/lib/db/models";
 
+/** Clamp and round to 2 decimal places for manual category scores. */
+export function clampManualPoints(raw: number, max: number): number {
+  const n = Number(raw);
+  if (Number.isNaN(n)) return 0;
+  const c = Math.min(max, Math.max(0, n));
+  return Math.round(c * 100) / 100;
+}
+
+export function validateManualPointsSet(
+  entries: { teamId: string; points: number }[],
+  expectedCount: number,
+  maxPoints: number,
+): { ok: true } | { ok: false; error: string } {
+  if (entries.length !== expectedCount) {
+    return {
+      ok: false,
+      error: `Expected exactly ${expectedCount} team scores, got ${entries.length}`,
+    };
+  }
+  const ids = new Set<string>();
+  for (const e of entries) {
+    if (ids.has(e.teamId)) {
+      return { ok: false, error: "Duplicate team in results" };
+    }
+    ids.add(e.teamId);
+    const p = Number(e.points);
+    if (Number.isNaN(p) || p < 0 || p > maxPoints) {
+      return {
+        ok: false,
+        error: `Each score must be between 0 and ${maxPoints}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /** placement is 1-based (1st place → index 0) */
 export function pointsForPlacement(
   scoring: GameScoring,

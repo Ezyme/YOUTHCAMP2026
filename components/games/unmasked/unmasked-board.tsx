@@ -23,7 +23,8 @@ import {
   generateBoard,
   seededShuffle,
   sortPersistedFragmentsForBoard,
-  MAX_VERSE_ASSEMBLY_ATTEMPTS,
+  CHECK_PASSAGE_WRONG_PENALTY_SECONDS,
+  REMAINING_HEART_CLOCK_REDUCTION_SECONDS,
   type Board,
 } from "@/lib/games/unmasked/engine";
 import {
@@ -37,7 +38,6 @@ import {
   writeLocalMirror,
 } from "@/lib/games/unmasked/mirror";
 import { getVerseByKey } from "@/lib/games/unmasked/verses";
-import { computeUnmaskedScore, marginalVersesSliceDelta } from "@/lib/games/unmasked/scoring";
 import type { PowerUpType } from "@/lib/db/models";
 import { showError, showInfo, showSuccess, showWarning } from "@/lib/ui/toast";
 import {
@@ -63,9 +63,7 @@ type PersistedState = {
   verseAssemblyIndices?: number[];
   verseAssembly?: number[];
   versesRestored?: string[];
-  verseCheckAttemptsByKey?: Record<string, number>;
-  versesGivenUp?: string[];
-  verseScore?: number;
+  passagesComplete?: boolean;
   verseCompleted?: boolean;
   redeemedCodes: string[];
   powerUps: { type: PowerUpType; used: boolean }[];
@@ -74,10 +72,13 @@ type PersistedState = {
   liesHit: number;
   startedAt: string;
   finishedAt?: string;
-  finalScore?: number;
-  scoreBreakdown?: { board: number; verses: number; hearts: number };
-  submittedAt?: string;
+  checkPassagePenaltySeconds?: number;
+  /** ISO time of last play-client activity (GET state / actions). Omitted on legacy docs. */
+  lastPlayActivityAt?: string | null;
 };
+
+/** Admin spectator: timer runs only while the team is actively playing (recent API activity). */
+const LIVE_PLAY_MS = 12_000;
 
 const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield }> = {
   extra_heart: { label: "Extra Heart", icon: Heart },
@@ -175,16 +176,17 @@ function verseColorIndex(verseKey: string, ordered: string[]): number {
   return Math.abs(h) % VERSE_PALETTE.length;
 }
 
+/** Mine counts: tuned for light tile surfaces (same in light and dark site theme). */
 function numberColor(n: number): string {
   const colors = [
     "",
-    "text-blue-600 dark:text-blue-400",
-    "text-green-600 dark:text-green-400",
-    "text-red-600 dark:text-red-400",
-    "text-purple-700 dark:text-purple-400",
-    "text-orange-700 dark:text-orange-400",
-    "text-teal-600 dark:text-teal-400",
-    "text-zinc-700 dark:text-zinc-300",
+    "text-blue-600",
+    "text-green-600",
+    "text-red-600",
+    "text-purple-700",
+    "text-orange-700",
+    "text-teal-600",
+    "text-zinc-700",
     "text-zinc-500",
   ];
   return colors[n] ?? "text-zinc-600";
@@ -195,8 +197,6 @@ function normalizeLoadedState(data: PersistedState): {
   verseFragments: VerseFragRow[];
   assembly: number[];
   restored: string[];
-  versesGivenUp: string[];
-  score: number;
 } {
   const legacyKey = data.verseKey ?? "";
   let keys =
@@ -217,13 +217,7 @@ function normalizeLoadedState(data: PersistedState): {
   if (!restored.length && data.verseCompleted && legacyKey) {
     restored = [legacyKey];
   }
-  const score =
-    data.verseScore ??
-    (data.verseCompleted && legacyKey ?
-      frags.filter((f) => f.verseKey === legacyKey).length
-    : 0);
-  const versesGivenUp = data.versesGivenUp ?? [];
-  return { verseKeys: keys, verseFragments: frags, assembly, restored, versesGivenUp, score };
+  return { verseKeys: keys, verseFragments: frags, assembly, restored };
 }
 
 export function UnmaskedBoard({
@@ -231,6 +225,7 @@ export function UnmaskedBoard({
   teamId,
   groupLabel,
   gameSlug = "unmasked",
+  readOnly = false,
 }: {
   sessionId: string;
   teamId: string;
@@ -238,6 +233,8 @@ export function UnmaskedBoard({
   /** Game definition slug (for Unmasked settings like safe-opening minimum). */
   gameSlug?: string;
   settings?: Record<string, unknown>;
+  /** Admin spectator: load via `/api/admin/unmasked/state`, no play actions. */
+  readOnly?: boolean;
 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -259,18 +256,19 @@ export function UnmaskedBoard({
   const [powerUps, setPowerUps] = useState<{ type: PowerUpType; used: boolean }[]>([]);
   const [verseAssemblyIndices, setVerseAssemblyIndices] = useState<number[]>([]);
   const [versesRestored, setVersesRestored] = useState<string[]>([]);
-  const [versesGivenUp, setVersesGivenUp] = useState<string[]>([]);
-  const [verseScore, setVerseScore] = useState(0);
+  const [passagesComplete, setPassagesComplete] = useState(false);
   const [redeemedCodes, setRedeemedCodes] = useState<string[]>([]);
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [checkPassagePenaltySeconds, setCheckPassagePenaltySeconds] = useState(0);
+  const [lastPlayActivityAt, setLastPlayActivityAt] = useState<Date | null>(null);
+  /** Forces re-render in admin view so “Paused” appears when idle threshold passes. */
+  const [readOnlyTick, setReadOnlyTick] = useState(0);
 
   const [codeInput, setCodeInput] = useState("");
   const [lastSolvedVerse, setLastSolvedVerse] = useState<{
     reference: string;
     full: string;
-    lineCredits?: number;
-    versesSliceDelta?: number;
   } | null>(null);
   const [activePowerUp, setActivePowerUp] = useState<PowerUpType | null>(null);
   const [scoutPeek, setScoutPeek] = useState<{ index: number; kind: string } | null>(null);
@@ -282,18 +280,9 @@ export function UnmaskedBoard({
   >(null);
   const [shimmerTile, setShimmerTile] = useState<number | null>(null);
   const [tipPowerUp, setTipPowerUp] = useState<PowerUpType | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [finalScore, setFinalScore] = useState<number | null>(null);
-  const [scoreBreakdownSaved, setScoreBreakdownSaved] = useState<{
-    board: number;
-    verses: number;
-    hearts: number;
-  } | null>(null);
 
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Prevents duplicate auto-submit; reset on new board (`reloadKey`). */
-  const autoSubmitVersesRef = useRef(false);
 
   /**
    * Serialize background action POSTs so the server always sees clicks in the
@@ -317,8 +306,6 @@ export function UnmaskedBoard({
     status,
     powerUps,
     versesRestored,
-    versesGivenUp,
-    verseScore,
     verseAssemblyIndices,
   });
   latestStateRef.current = {
@@ -331,8 +318,6 @@ export function UnmaskedBoard({
     status,
     powerUps,
     versesRestored,
-    versesGivenUp,
-    verseScore,
     verseAssemblyIndices,
   };
 
@@ -370,12 +355,56 @@ export function UnmaskedBoard({
   );
 
   useEffect(() => {
-    if (status !== "playing" || !startedAt) return;
-    const interval = setInterval(() => {
+    if (status === "lost" || passagesComplete || !startedAt) return;
+
+    const now = () => Date.now();
+    const teamLive =
+      !readOnly ||
+      (lastPlayActivityAt != null && now() - lastPlayActivityAt.getTime() < LIVE_PLAY_MS);
+
+    if (readOnly && !teamLive) {
+      if (lastPlayActivityAt) {
+        setElapsed(
+          Math.floor((lastPlayActivityAt.getTime() - startedAt.getTime()) / 1000),
+        );
+      } else {
+        setElapsed(Math.floor((now() - startedAt.getTime()) / 1000));
+      }
+      return;
+    }
+
+    const tick = () => {
       setElapsed(Math.floor((Date.now() - startedAt.getTime()) / 1000));
-    }, 1000);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [status, startedAt]);
+  }, [status, passagesComplete, startedAt, readOnly, lastPlayActivityAt]);
+
+  /** Poll admin view so facilitator sees when a team goes live / idle. */
+  useEffect(() => {
+    if (!readOnly || !sessionId || !teamId) return;
+    const slugQ = encodeURIComponent(gameSlug);
+    const url = `/api/admin/unmasked/state?sessionId=${sessionId}&teamId=${teamId}&slug=${slugQ}`;
+    const poll = async () => {
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data: PersistedState = await res.json();
+      setLastPlayActivityAt(
+        data.lastPlayActivityAt ? new Date(data.lastPlayActivityAt) : null,
+      );
+      setCheckPassagePenaltySeconds(Math.max(0, Number(data.checkPassagePenaltySeconds ?? 0)));
+    };
+    void poll();
+    const id = window.setInterval(() => void poll(), 5000);
+    return () => window.clearInterval(id);
+  }, [readOnly, sessionId, teamId, gameSlug]);
+
+  useEffect(() => {
+    if (!readOnly || passagesComplete || status === "lost") return;
+    const id = window.setInterval(() => setReadOnlyTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [readOnly, passagesComplete, status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -389,7 +418,7 @@ export function UnmaskedBoard({
        * next and overwrites with authoritative state (mirror only carries
        * slices the server will also return).
        */
-      const mirror = readLocalMirror(sessionId, teamId);
+      const mirror = readOnly ? null : readLocalMirror(sessionId, teamId);
       if (mirror) {
         setRevealed(new Set(mirror.revealed));
         setFlagged(new Set(mirror.flagged));
@@ -400,20 +429,25 @@ export function UnmaskedBoard({
         setStatus(mirror.status);
         setPowerUps(mirror.powerUps);
         if (Array.isArray(mirror.versesRestored)) setVersesRestored(mirror.versesRestored);
-        if (Array.isArray(mirror.versesGivenUp)) setVersesGivenUp(mirror.versesGivenUp);
-        if (typeof mirror.verseScore === "number") setVerseScore(mirror.verseScore);
         if (Array.isArray(mirror.verseAssemblyIndices))
           setVerseAssemblyIndices(mirror.verseAssemblyIndices);
       }
 
       try {
+        const slugQ = encodeURIComponent(gameSlug);
         const res = await fetch(
-          `/api/unmasked/state?sessionId=${sessionId}&teamId=${teamId}&slug=unmasked`,
+          readOnly
+            ? `/api/admin/unmasked/state?sessionId=${sessionId}&teamId=${teamId}&slug=${slugQ}`
+            : `/api/unmasked/state?sessionId=${sessionId}&teamId=${teamId}&slug=${slugQ}`,
         );
         if (cancelled) return;
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
-          setError(String(d.error ?? "Failed to load"));
+          const msg =
+            readOnly && res.status === 404 ?
+              "This team has not opened Unmasked yet — there is no saved board to show."
+            : String(d.error ?? "Failed to load");
+          setError(msg);
           setLoading(false);
           return;
         }
@@ -442,32 +476,33 @@ export function UnmaskedBoard({
         setPowerUps(data.powerUps);
         setVerseAssemblyIndices(norm.assembly);
         setVersesRestored(norm.restored);
-        setVersesGivenUp(norm.versesGivenUp);
-        setVerseScore(norm.score);
+        const derivedPassagesComplete =
+          Boolean(data.passagesComplete) ||
+          (data.status === "won" &&
+            norm.verseKeys.length > 0 &&
+            norm.verseKeys.every((k) => norm.restored.includes(k)));
+        setPassagesComplete(derivedPassagesComplete);
+        setCheckPassagePenaltySeconds(Math.max(0, Number(data.checkPassagePenaltySeconds ?? 0)));
         setRedeemedCodes(data.redeemedCodes);
         setStartedAt(new Date(data.startedAt));
-        if (typeof data.finalScore === "number" && data.scoreBreakdown) {
-          setFinalScore(data.finalScore);
-          setScoreBreakdownSaved(data.scoreBreakdown);
-        } else {
-          setFinalScore(null);
-          setScoreBreakdownSaved(null);
-        }
+        setLastPlayActivityAt(
+          data.lastPlayActivityAt ? new Date(data.lastPlayActivityAt) : null,
+        );
 
-        writeLocalMirror(sessionId, teamId, {
-          revealed: data.revealed,
-          flagged: data.flagged,
-          hearts: data.hearts,
-          maxHearts: data.maxHearts,
-          liesHit: data.liesHit,
-          shielded: data.shielded,
-          status: data.status,
-          powerUps: data.powerUps,
-          versesRestored: norm.restored,
-          versesGivenUp: norm.versesGivenUp,
-          verseScore: norm.score,
-          verseAssemblyIndices: norm.assembly,
-        });
+        if (!readOnly) {
+          writeLocalMirror(sessionId, teamId, {
+            revealed: data.revealed,
+            flagged: data.flagged,
+            hearts: data.hearts,
+            maxHearts: data.maxHearts,
+            liesHit: data.liesHit,
+            shielded: data.shielded,
+            status: data.status,
+            powerUps: data.powerUps,
+            versesRestored: norm.restored,
+            verseAssemblyIndices: norm.assembly,
+          });
+        }
       } catch {
         if (!cancelled) setError("Network error loading game state");
       }
@@ -476,16 +511,13 @@ export function UnmaskedBoard({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, teamId, reloadKey]);
-
-  useEffect(() => {
-    autoSubmitVersesRef.current = false;
-  }, [reloadKey]);
+  }, [sessionId, teamId, reloadKey, readOnly, gameSlug]);
 
   async function handleRetry() {
+    if (passagesComplete) return;
     if (
       !confirm(
-        "Start a fresh board? The minefield and passages reshuffle; hearts and verse score reset. Amazing Race codes you already redeemed stay unlocked — power-ups refresh for this run.",
+        "Start a fresh board? The minefield and passages reshuffle; hearts reset but your timer keeps running. Amazing Race codes you already redeemed stay unlocked — power-ups refresh for this run.",
       )
     ) {
       return;
@@ -542,8 +574,8 @@ export function UnmaskedBoard({
     powerUps: { type: PowerUpType; used: boolean }[];
     status: "playing" | "won" | "lost";
     versesRestored?: string[];
-    versesGivenUp?: string[];
-    verseScore?: number;
+    passagesComplete?: boolean;
+    checkPassagePenaltySeconds?: number;
     verseAssemblyIndices?: number[];
   };
 
@@ -579,28 +611,30 @@ export function UnmaskedBoard({
       setPowerUps(s.powerUps);
       setStatus(s.status);
       if (Array.isArray(s.versesRestored)) setVersesRestored(s.versesRestored);
-      if (Array.isArray(s.versesGivenUp)) setVersesGivenUp(s.versesGivenUp);
-      if (typeof s.verseScore === "number") setVerseScore(s.verseScore);
+      if (typeof s.passagesComplete === "boolean") setPassagesComplete(s.passagesComplete);
+      if (typeof s.checkPassagePenaltySeconds === "number") {
+        setCheckPassagePenaltySeconds(s.checkPassagePenaltySeconds);
+      }
       if (Array.isArray(s.verseAssemblyIndices)) {
         setVerseAssemblyIndices(s.verseAssemblyIndices);
       }
-      writeLocalMirror(sessionId, teamId, {
-        revealed: s.revealed,
-        flagged: s.flagged,
-        hearts: s.hearts,
-        maxHearts: s.maxHearts,
-        liesHit: s.liesHit,
-        shielded: s.shielded,
-        status: s.status,
-        powerUps: s.powerUps,
-        versesRestored: s.versesRestored ?? latestStateRef.current.versesRestored,
-        versesGivenUp: s.versesGivenUp ?? latestStateRef.current.versesGivenUp,
-        verseScore: s.verseScore ?? latestStateRef.current.verseScore,
-        verseAssemblyIndices:
-          s.verseAssemblyIndices ?? latestStateRef.current.verseAssemblyIndices,
-      });
+      if (!readOnly) {
+        writeLocalMirror(sessionId, teamId, {
+          revealed: s.revealed,
+          flagged: s.flagged,
+          hearts: s.hearts,
+          maxHearts: s.maxHearts,
+          liesHit: s.liesHit,
+          shielded: s.shielded,
+          status: s.status,
+          powerUps: s.powerUps,
+          versesRestored: s.versesRestored ?? latestStateRef.current.versesRestored,
+          verseAssemblyIndices:
+            s.verseAssemblyIndices ?? latestStateRef.current.verseAssemblyIndices,
+        });
+      }
     },
-    [sessionId, teamId],
+    [sessionId, teamId, readOnly],
   );
 
   /**
@@ -707,22 +741,22 @@ export function UnmaskedBoard({
         powerUps: slice.powerUps.map((p) => ({ ...p })),
         status: slice.status,
       };
-      writeLocalMirror(sessionId, teamId, {
-        revealed: slice.revealed,
-        flagged: slice.flagged,
-        hearts: slice.hearts,
-        maxHearts: slice.maxHearts,
-        liesHit: slice.liesHit,
-        shielded: slice.shielded,
-        status: slice.status,
-        powerUps: slice.powerUps,
-        versesRestored: prev.versesRestored,
-        versesGivenUp: prev.versesGivenUp,
-        verseScore: prev.verseScore,
-        verseAssemblyIndices: prev.verseAssemblyIndices,
-      });
+      if (!readOnly) {
+        writeLocalMirror(sessionId, teamId, {
+          revealed: slice.revealed,
+          flagged: slice.flagged,
+          hearts: slice.hearts,
+          maxHearts: slice.maxHearts,
+          liesHit: slice.liesHit,
+          shielded: slice.shielded,
+          status: slice.status,
+          powerUps: slice.powerUps,
+          versesRestored: prev.versesRestored,
+          verseAssemblyIndices: prev.verseAssemblyIndices,
+        });
+      }
     },
-    [sessionId, teamId],
+    [sessionId, teamId, readOnly],
   );
 
   /**
@@ -811,18 +845,6 @@ export function UnmaskedBoard({
     showInfo("Dev: all safe tiles revealed (minefield cleared).");
   }, [doActionServer]);
 
-  /** Line credits per passage = fragment count (1 credit per line when solved); see trySolveVerseAssembly. */
-  const versePtsByKey = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const f of verseFragments) {
-      m.set(f.verseKey, (m.get(f.verseKey) ?? 0) + 1);
-    }
-    return m;
-  }, [verseFragments]);
-
-  /** Sum of line credits on the board (tags add up to this — not the /100 “Verses” slice). */
-  const totalLineCredits = useMemo(() => verseFragments.length, [verseFragments]);
-
   const doCheckVerse = useCallback(async () => {
     if (status !== "won") {
       showInfo("Clear the minefield first", {
@@ -845,8 +867,10 @@ export function UnmaskedBoard({
     const s = data.state;
     if (s) {
       setVersesRestored(s.versesRestored ?? []);
-      setVersesGivenUp(s.versesGivenUp ?? []);
-      setVerseScore(s.verseScore ?? 0);
+      if (typeof s.passagesComplete === "boolean") setPassagesComplete(s.passagesComplete);
+      if (typeof s.checkPassagePenaltySeconds === "number") {
+        setCheckPassagePenaltySeconds(s.checkPassagePenaltySeconds);
+      }
       setVerseAssemblyIndices(s.verseAssemblyIndices ?? []);
       const latest = latestStateRef.current;
       writeLocalMirror(sessionId, teamId, {
@@ -859,8 +883,6 @@ export function UnmaskedBoard({
         status: latest.status,
         powerUps: latest.powerUps,
         versesRestored: s.versesRestored ?? [],
-        versesGivenUp: s.versesGivenUp ?? [],
-        verseScore: s.verseScore ?? 0,
         verseAssemblyIndices: s.verseAssemblyIndices ?? [],
       });
     }
@@ -869,41 +891,32 @@ export function UnmaskedBoard({
       const entry = getVerseByKey(r.verseKey);
       const reference = entry?.reference ?? "";
       const full = entry?.full ?? "";
-      const prevRestored = versesRestored.length;
-      const versesSliceDelta = marginalVersesSliceDelta(prevRestored, verseKeys.length);
       setLastSolvedVerse({
         reference,
         full,
-        lineCredits: r.pointsAdded,
-        versesSliceDelta: versesSliceDelta > 0 ? versesSliceDelta : undefined,
       });
-      const sliceHint =
-        versesSliceDelta > 0 ?
-          ` Your /100 “Verses” score also increased by ${versesSliceDelta} (separate from line credits).`
-        : "";
-      showSuccess(`+${r.pointsAdded} line credits`, {
-        description:
-          (reference ? `${reference} — passage restored!` : "Passage restored!") + sliceHint,
+      showSuccess(reference ? `${reference} — passage restored!` : "Passage restored!", {
         duration: 5200,
       });
+      if (s?.passagesComplete) {
+        showSuccess("Every passage is correct — full run complete!", { duration: 6000 });
+      }
       setTimeout(() => setLastSolvedVerse(null), 18000);
-    } else if (r?.forfeited && r?.verseKey) {
-      const atStake = versePtsByKey.get(r.verseKey) ?? 0;
-      showWarning("No attempts left for this passage", {
-        description: `The answer is shown below — ${atStake} line credit${atStake === 1 ? "" : "s"} not earned.`,
-        duration: 5500,
-      });
     } else if (r?.reason) {
-      const left =
-        typeof r.attemptsRemaining === "number" ?
-          `${r.attemptsRemaining} attempt${r.attemptsRemaining === 1 ? "" : "s"} left`
-        : undefined;
+      const added =
+        typeof (r as { penaltySecondsAdded?: number }).penaltySecondsAdded === "number" ?
+          (r as { penaltySecondsAdded: number }).penaltySecondsAdded
+        : 0;
+      const clue = (r as { referenceClue?: string }).referenceClue;
       showWarning(r.reason, {
-        description: left,
-        duration: 4800,
+        description:
+          added > 0 ?
+            `${clue ? `Clue — ${clue}. ` : ""}+${added}s added to your time.`
+          : undefined,
+        duration: 5200,
       });
     }
-  }, [sessionId, teamId, verseAssemblyIndices, status, versePtsByKey, versesRestored.length, verseKeys.length]);
+  }, [sessionId, teamId, verseAssemblyIndices, status]);
 
   function resetPowerUpIntent() {
     setActivePowerUp(null);
@@ -915,6 +928,7 @@ export function UnmaskedBoard({
   }
 
   async function handleTileClick(index: number) {
+    if (readOnly) return;
     if (status !== "playing" || !board) return;
 
     if (activePowerUp === "truth_radar") {
@@ -1040,6 +1054,7 @@ export function UnmaskedBoard({
 
   function handleContextMenu(e: React.MouseEvent, index: number) {
     e.preventDefault();
+    if (readOnly) return;
     if (ARMABLE_POWER_UPS.has(activePowerUp ?? "extra_heart")) return;
     if (status === "playing" && !revealed.has(index)) {
       doFlagOptimistic(index);
@@ -1083,62 +1098,6 @@ export function UnmaskedBoard({
     }
     setCodeInput("");
   }
-
-  const handleSubmitScore = useCallback(async (): Promise<boolean> => {
-    if (status === "playing") {
-      showError("Finish the board before submitting your score.");
-      return false;
-    }
-    if (finalScore != null) {
-      showInfo("Score already submitted.");
-      return true;
-    }
-    setSubmitting(true);
-    try {
-      const res = await fetch("/api/unmasked/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, teamId }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        showError(String(data.error ?? "Could not submit score"));
-        return false;
-      }
-      setFinalScore(Number(data.finalScore));
-      if (data.scoreBreakdown) setScoreBreakdownSaved(data.scoreBreakdown);
-      showSuccess(
-        data.already ? "Score already on record." : `Score submitted: ${data.finalScore}/100`,
-      );
-      return true;
-    } finally {
-      setSubmitting(false);
-    }
-  }, [sessionId, teamId, status, finalScore]);
-
-  useEffect(() => {
-    if (loading || !board || finalScore != null || submitting) return;
-    if (status !== "won") return;
-    const allVersesDone =
-      verseKeys.length === 0 ||
-      verseKeys.every((k) => versesRestored.includes(k) || versesGivenUp.includes(k));
-    if (!allVersesDone) return;
-    if (autoSubmitVersesRef.current) return;
-    autoSubmitVersesRef.current = true;
-    void handleSubmitScore().then((ok) => {
-      if (!ok) autoSubmitVersesRef.current = false;
-    });
-  }, [
-    loading,
-    board,
-    finalScore,
-    submitting,
-    status,
-    verseKeys,
-    versesRestored,
-    versesGivenUp,
-    handleSubmitScore,
-  ]);
 
   async function handleUsePowerUp(type: PowerUpType) {
     if (ARMABLE_POWER_UPS.has(type)) {
@@ -1203,15 +1162,14 @@ export function UnmaskedBoard({
   }
 
   const solvedSet = useMemo(() => new Set(versesRestored), [versesRestored]);
-  const givenUpSet = useMemo(() => new Set(versesGivenUp), [versesGivenUp]);
 
   const indicesSolvedAway = useMemo(() => {
-    const s = new Set<number>();
+    const next = new Set<number>();
     for (const f of verseFragments) {
-      if (solvedSet.has(f.verseKey) || givenUpSet.has(f.verseKey)) s.add(f.index);
+      if (solvedSet.has(f.verseKey)) next.add(f.index);
     }
-    return s;
-  }, [verseFragments, solvedSet, givenUpSet]);
+    return next;
+  }, [verseFragments, solvedSet]);
 
   /** Revealed fragments still in play (not yet restored as a complete verse). */
   const availablePool = useMemo(() => {
@@ -1243,7 +1201,7 @@ export function UnmaskedBoard({
       .filter(Boolean) as VerseFragRow[];
   }, [verseAssemblyIndices, verseFragments]);
 
-  const canAssembleVerses = status === "won";
+  const canAssembleVerses = status === "won" && !passagesComplete;
 
   function addToAssembly(tileIndex: number) {
     if (!canAssembleVerses) return;
@@ -1273,11 +1231,23 @@ export function UnmaskedBoard({
     ? [...revealed].filter((i) => board.tiles[i]?.kind !== "lie").length
     : 0;
   const tilesRemaining = totalSafe - revealedSafe;
+  const rawClockSeconds = Math.max(0, elapsed + checkPassagePenaltySeconds);
+  const heartClockReductionSeconds =
+    passagesComplete ? hearts * REMAINING_HEART_CLOCK_REDUCTION_SECONDS : 0;
+  const displayedElapsed = Math.max(0, rawClockSeconds - heartClockReductionSeconds);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60);
     const sec = s % 60;
     return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  /** Human-readable minutes total (e.g. spare-heart clock bonus). */
+  const formatBonusMinutes = (totalSeconds: number) => {
+    const m = totalSeconds / 60;
+    if (m <= 0) return "0 min";
+    if (Number.isInteger(m)) return `${m} min`;
+    return `${m.toFixed(1)} min`;
   };
 
   const availablePowerUps = powerUps.filter((p) => !p.used);
@@ -1299,20 +1269,16 @@ export function UnmaskedBoard({
   }, [powerUps]);
   const cellRem = board ? Math.min(2.85, 58 / board.gridSize) : 2.85;
 
-  const liveScore = useMemo(() => {
-    if (!board) return { total: 0, breakdown: { board: 0, verses: 0, hearts: 0 } };
-    return computeUnmaskedScore({
-      revealedSafe,
-      totalSafe,
-      versesRestored: versesRestored.length,
-      totalVerses: verseKeys.length,
-      hearts,
-      maxHearts,
-      final: status !== "playing",
-    });
-  }, [board, revealedSafe, totalSafe, versesRestored.length, verseKeys.length, hearts, maxHearts, status]);
-
   const usedVerseKeys = useMemo(() => [...new Set(verseFragments.map((f) => f.verseKey))], [verseFragments]);
+
+  const spectatorPaused = useMemo(() => {
+    if (!readOnly || passagesComplete || status === "lost") return false;
+    void readOnlyTick; // recompute when wall clock crosses idle threshold
+    return (
+      lastPlayActivityAt == null ||
+      Date.now() - lastPlayActivityAt.getTime() >= LIVE_PLAY_MS
+    );
+  }, [readOnly, passagesComplete, status, lastPlayActivityAt, readOnlyTick]);
 
   if (loading) {
     return (
@@ -1356,52 +1322,95 @@ export function UnmaskedBoard({
             <Shield className="ml-1 size-4 fill-amber-400 text-amber-500" />
           ) : null}
         </div>
-        <span className="font-mono text-muted-foreground">
-          {formatTime(elapsed)}
-        </span>
+        {passagesComplete && heartClockReductionSeconds > 0 ? (
+          <span
+            className="flex max-w-full flex-wrap items-baseline gap-x-1.5 gap-y-1 font-mono text-sm"
+            title={`Actual ${formatTime(rawClockSeconds)} (includes +${checkPassagePenaltySeconds}s from wrong “Check passage” attempts). Spare hearts: −${formatBonusMinutes(heartClockReductionSeconds)} (${hearts} × ${REMAINING_HEART_CLOCK_REDUCTION_SECONDS / 60} min). Final ranked time ${formatTime(displayedElapsed)}.`}
+          >
+            <span className="tabular-nums text-muted-foreground">{formatTime(rawClockSeconds)}</span>
+            <span className="font-sans text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
+              actual
+            </span>
+            <span className="text-muted-foreground/60" aria-hidden>
+              ·
+            </span>
+            <span
+              className="font-sans text-[11px] font-semibold text-emerald-700 dark:text-emerald-300"
+              title={`${hearts} spare heart${hearts === 1 ? "" : "s"} × ${REMAINING_HEART_CLOCK_REDUCTION_SECONDS / 60} min each`}
+            >
+              −{formatBonusMinutes(heartClockReductionSeconds)}
+            </span>
+            <span className="text-muted-foreground/60" aria-hidden>
+              ·
+            </span>
+            <span className="tabular-nums font-semibold text-foreground">{formatTime(displayedElapsed)}</span>
+            <span className="font-sans text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
+              final
+            </span>
+          </span>
+        ) : (
+          <span
+            className="font-mono text-muted-foreground"
+            title={
+              passagesComplete ?
+                `Actual and final time (no spare-heart bonus). Wrong-check penalties: +${checkPassagePenaltySeconds}s.`
+              : checkPassagePenaltySeconds > 0 ?
+                `Clock time plus ${checkPassagePenaltySeconds}s from wrong “Check passage” attempts`
+              : "Clock time for this run (including any passage penalties)"
+            }
+          >
+            {formatTime(displayedElapsed)}
+          </span>
+        )}
+        {readOnly && spectatorPaused ? (
+          <span
+            className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+            title="Clock is frozen until this team is active on the game again (recent play session)."
+          >
+            Timer paused
+          </span>
+        ) : null}
         <span className="text-muted-foreground">{tilesRemaining} tiles left</span>
-        <span
-          className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100"
-          title={
-            totalLineCredits > 0 ?
-              `Line tally: 1 credit per restored fragment (max ${totalLineCredits} on this board). Separate from the /100 score’s “Verses” row (max 30, shared by passage completion).`
-            : "Line tally from restored fragments."
-          }
-        >
-          Lines: {verseScore}
-          {totalLineCredits > 0 ? ` / ${totalLineCredits}` : ""}
-        </span>
         <span className="text-xs text-muted-foreground">
-          Passages: {versesRestored.length}/{verseKeys.length}
+          Passages:{" "}
+          {verseKeys.length > 0 ?
+            `${verseKeys.filter((k) => versesRestored.includes(k)).length}/${verseKeys.length}`
+          : "—"}
         </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary"
-          title={`Live /100 score — Board ${liveScore.breakdown.board} · Verses ${liveScore.breakdown.verses} (max 30, by passages restored) · Hearts ${liveScore.breakdown.hearts}. Line tally is separate (see “Lines” badge).`}
-        >
-          <Trophy className="size-3" />
-          {finalScore != null ? `${finalScore}/100 (final)` : `${liveScore.total}/100`}
-        </span>
-        {status === "won" ? (
+        {passagesComplete ? (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border border-emerald-400/50 bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100 ${
+              !readOnly ? "sm:ml-auto" : ""
+            }`}
+          >
+            <Trophy className="size-3" />
+            Complete!
+          </span>
+        ) : status === "won" ? (
           <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-            Board clear!
+            Minefield clear
           </span>
         ) : status === "lost" ? (
           <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-800 dark:bg-red-950 dark:text-red-200">
             Game Over
           </span>
         ) : null}
-        <button
-          type="button"
-          onClick={() => void handleRetry()}
-          disabled={retrying}
-          className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-foreground shadow-sm disabled:opacity-50 sm:ml-auto"
-        >
-          <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
-          {retrying ? "Shuffling…" : "New board"}
-        </button>
+        {!readOnly && !passagesComplete ? (
+          <button
+            type="button"
+            onClick={() => void handleRetry()}
+            disabled={retrying}
+            className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-foreground shadow-sm disabled:opacity-50 sm:ml-auto"
+          >
+            <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
+            {retrying ? "Shuffling…" : "New board"}
+          </button>
+        ) : readOnly ? (
+          <span className="ml-auto text-[11px] text-muted-foreground">View only</span>
+        ) : null}
       </div>
 
-      {status === "playing" ? (
+      {!readOnly && status === "playing" ? (
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -1465,18 +1474,24 @@ export function UnmaskedBoard({
         </div>
       ) : null}
 
-      {scoutPeek ? (
+      {!readOnly && scoutPeek ? (
         <div className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
           Tile peeked: {formatScoutPeekKind(scoutPeek.kind)} — fading in 3s...
         </div>
       ) : null}
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-4">
-        <aside className="order-2 w-full max-w-full lg:order-1 lg:w-36 lg:max-w-[9.5rem] lg:shrink-0">
+        <aside
+          className={`order-2 w-full max-w-full lg:order-1 lg:w-36 lg:max-w-[9.5rem] lg:shrink-0 ${readOnly ? "pointer-events-none opacity-95" : ""}`}
+        >
           <div className="ui-card-muted rounded-xl p-2 sm:p-2.5">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-foreground">Power-ups</p>
-              <span className="text-[11px] text-muted-foreground">Long-press for tip</span>
+              {!readOnly ? (
+                <span className="text-[11px] text-muted-foreground">Long-press for tip</span>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">Inventory</span>
+              )}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-1 lg:gap-1">
               {ALL_POWER_UP_TYPES.map((type) => {
@@ -1553,7 +1568,7 @@ export function UnmaskedBoard({
         </aside>
 
         <div className="order-1 min-w-0 flex-1 lg:order-2">
-          {activePowerUp ? (
+          {!readOnly && activePowerUp ? (
             <div
               role="status"
               className="mx-auto mb-2 max-w-full rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-center text-[11px] font-medium text-primary"
@@ -1564,9 +1579,16 @@ export function UnmaskedBoard({
             </div>
           ) : null}
           <div
+            className={`rounded-xl bg-emerald-50/95 p-2 ring-1 ring-emerald-900/10 dark:ring-emerald-100/25 ${
+              flagMode ? "ring-2 ring-amber-400/70" : ""
+            }`}
+          >
+          <div
             className={`unmasked-board mx-auto grid w-full gap-0.5 rounded-lg p-1 transition sm:gap-1 ${
+              readOnly ? "pointer-events-none" : ""
+            } ${
               flagMode
-                ? "bg-amber-100/60 ring-2 ring-amber-300/70 dark:bg-amber-950/40 dark:ring-amber-700/60"
+                ? "bg-amber-100/50 ring-2 ring-amber-300/80"
                 : "bg-transparent ring-0"
             }`}
             style={{
@@ -1596,10 +1618,10 @@ export function UnmaskedBoard({
 
           if (isRevealed) {
             if (isLie) {
-              const cls = `flex aspect-square min-h-0 items-center justify-center rounded text-[0.65rem] sm:text-xs ${
+              const cls = `flex aspect-square min-h-0 items-center justify-center rounded-lg text-[0.65rem] sm:text-xs ${
                 isHighlighted && highlightMode === "truth_radar" ?
-                  "animate-pulse border border-red-400 bg-red-200 dark:border-red-500 dark:bg-red-900"
-                : "bg-red-100 dark:bg-red-950"
+                  "animate-pulse border border-red-400 bg-red-200"
+                : "border border-red-200/90 bg-red-100"
               } ${needsFocalTileFromGrid ? focalRevealHover : ""}`;
               return needsFocalTileFromGrid ? (
                 <button
@@ -1610,30 +1632,30 @@ export function UnmaskedBoard({
                   className={cls}
                   title={tile.lieText}
                 >
-                  <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600 dark:text-red-400`}>X</span>
+                  <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600`}>X</span>
                 </button>
               ) : (
                 <div key={i} className={cls} title={tile.lieText}>
-                  <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600 dark:text-red-400`}>X</span>
+                  <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600`}>X</span>
                 </div>
               );
             }
             if (isVerse) {
-              const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-lg border-2 border-amber-200/75 dark:border-violet-400/55 ${
+              const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-lg border-2 border-amber-200/80 ${
                 isHighlighted && highlightMode === "verse_compass" ?
-                  "ring-2 ring-violet-400 ring-offset-1 ring-offset-background dark:ring-violet-300 dark:ring-offset-background"
+                  "ring-2 ring-violet-400 ring-offset-1 ring-offset-emerald-50"
                 : ""
               } ${needsFocalTileFromGrid ? `${focalRevealHover} hover:ring-2` : ""}`;
               const verseClue =
                 tile.adjacentLies > 0 ? (
                   <span
-                    className={`relative z-10 text-[0.75rem] font-bold tabular-nums drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] dark:drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)] sm:text-sm ${numberColor(tile.adjacentLies)}`}
+                    className={`relative z-10 text-[0.75rem] font-bold tabular-nums drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] sm:text-sm ${numberColor(tile.adjacentLies)}`}
                   >
                     {tile.adjacentLies}
                   </span>
                 ) : (
                   <Sparkles
-                    className="relative z-10 size-4 text-amber-50 opacity-95 drop-shadow-[0_0_8px_rgba(250,232,255,0.95)] dark:text-cyan-100 dark:opacity-90 sm:size-[1.15rem]"
+                    className="relative z-10 size-4 text-amber-50 opacity-95 drop-shadow-[0_0_8px_rgba(250,232,255,0.95)] sm:size-[1.15rem]"
                     strokeWidth={2}
                   />
                 );
@@ -1647,7 +1669,7 @@ export function UnmaskedBoard({
                   title="Passage tile — number shows adjacent lies"
                 >
                   <Sparkles
-                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white dark:opacity-40"
+                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
                     aria-hidden
                   />
                   {verseClue}
@@ -1655,17 +1677,17 @@ export function UnmaskedBoard({
               ) : (
                 <div key={i} className={cls} title="Passage tile — number shows adjacent lies">
                   <Sparkles
-                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white dark:opacity-40"
+                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
                     aria-hidden
                   />
                   {verseClue}
                 </div>
               );
             }
-            const cls = `flex aspect-square min-h-0 items-center justify-center rounded ${
+            const cls = `flex aspect-square min-h-0 items-center justify-center rounded-lg border border-transparent bg-white ${
               isHighlighted && (highlightMode === "reveal" || highlightMode === "safe_opening" || highlightMode === "gentle_step") ?
-                "animate-pulse border border-emerald-400 bg-emerald-100 dark:border-emerald-600 dark:bg-emerald-950"
-              : "bg-zinc-100 dark:bg-zinc-800"
+                "animate-pulse border border-emerald-400 bg-emerald-100"
+              : ""
             } ${needsFocalTileFromGrid ? focalRevealHover : ""}`;
             return needsFocalTileFromGrid ? (
               <button
@@ -1703,15 +1725,15 @@ export function UnmaskedBoard({
               onClick={() => void handleTileClick(i)}
               onContextMenu={(e) => handleContextMenu(e, i)}
               disabled={status !== "playing"}
-              className={`flex aspect-square min-h-0 items-center justify-center rounded border text-[0.65rem] font-medium transition sm:text-xs ${
+              className={`flex aspect-square min-h-0 items-center justify-center rounded-lg border text-[0.65rem] font-medium transition sm:text-xs ${
                 isScoutPeek
                   ? scoutPeek.kind === "lie"
-                    ? "border-red-400 bg-red-100 dark:border-red-600 dark:bg-red-950"
+                    ? "border-red-400 bg-red-100"
                   : scoutPeek.kind === "verse"
-                    ? "border-amber-400 bg-amber-100 dark:border-amber-700 dark:bg-amber-950"
-                    : "border-emerald-400 bg-emerald-100 dark:border-emerald-600 dark:bg-emerald-950"
+                    ? "border-amber-400 bg-amber-100"
+                    : "border-emerald-400 bg-emerald-100"
                   : isHighlighted && highlightMode === "lie_pin"
-                    ? "animate-pulse border-rose-500 bg-rose-100 dark:border-rose-500 dark:bg-rose-950/90"
+                    ? "animate-pulse border-rose-500 bg-rose-100"
                   : isTruthRadarOrigin
                     ? "border-primary bg-primary/10 ring-2 ring-primary/40"
                   : (activePowerUp === "scout" ||
@@ -1720,16 +1742,16 @@ export function UnmaskedBoard({
                       activePowerUp === "lie_pin" ||
                       activePowerUp === "gentle_step") &&
                       !isFlagged
-                    ? "border-border bg-muted ring-0 transition-[box-shadow,background-color,border-color] hover:border-primary/50 hover:ring-1 hover:ring-primary/30 hover:bg-primary/5 active:border-primary active:ring-2 active:ring-primary/45"
+                    ? "border-zinc-300 bg-zinc-100/95 ring-0 transition-[box-shadow,background-color,border-color] hover:border-primary/50 hover:ring-1 hover:ring-primary/30 hover:bg-white active:border-primary active:ring-2 active:ring-primary/45"
                     : isShimmer
                       ? "animate-pulse border-primary/50 bg-primary/10"
                     : isFlagged
-                      ? "border-rose-400/80 bg-rose-100 dark:border-rose-600 dark:bg-rose-950/90"
-                      : "border-border bg-muted hover:bg-muted/80"
+                      ? "border-rose-400/80 bg-rose-100"
+                      : "border-zinc-300 bg-zinc-100/95 hover:bg-zinc-200/90"
               } disabled:cursor-not-allowed disabled:opacity-60`}
             >
               {isFlagged ? (
-                <Flag className="size-2.5 text-rose-600 dark:text-rose-400 sm:size-3.5" />
+                <Flag className="size-2.5 text-rose-600 sm:size-3.5" />
               ) : isScoutPeek ? (
                 <Eye className="size-2.5 sm:size-3.5" />
               ) : null}
@@ -1737,13 +1759,14 @@ export function UnmaskedBoard({
           );
             })}
           </div>
+          </div>
         </div>
       </div>
 
-      {status !== "playing" ? (
+      {status === "lost" || passagesComplete ? (
         <div
           className={`rounded-xl border p-4 text-sm ${
-            status === "won"
+            passagesComplete
               ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
               : "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-100"
           }`}
@@ -1751,49 +1774,34 @@ export function UnmaskedBoard({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="font-semibold">
-                {status === "won" ? "Board clear!" : "Game over."}{" "}
+                {passagesComplete ? "You finished the full run!" : "Game over."}{" "}
                 <span className="font-normal opacity-80">
-                  {status === "won"
-                    ? `Time ${formatTime(elapsed)} · ${hearts}/${maxHearts} hearts left · ${liesHit} lies hit.`
-                    : "All hearts lost. The board above shows what was hidden."}
+                  {passagesComplete ?
+                    heartClockReductionSeconds > 0 ?
+                      `Actual ${formatTime(rawClockSeconds)} · spare hearts −${formatBonusMinutes(heartClockReductionSeconds)} · final ${formatTime(displayedElapsed)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
+                    : `Time ${formatTime(rawClockSeconds)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
+                  : "All hearts lost. The board above shows what was hidden."}
                 </span>
               </p>
-              <p className="mt-1 text-xs opacity-90">
-                Score{" "}
-                <strong>
-                  {finalScore != null ? finalScore : liveScore.total}/100
-                </strong>{" "}
-                — Board {scoreBreakdownSaved?.board ?? liveScore.breakdown.board} · Verses{" "}
-                {scoreBreakdownSaved?.verses ?? liveScore.breakdown.verses} · Hearts{" "}
-                {scoreBreakdownSaved?.hearts ?? liveScore.breakdown.hearts}.{" "}
-                {finalScore == null ? "Submit to record it." : "Submitted."}
-              </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void handleSubmitScore()}
-                disabled={submitting || finalScore != null}
-                className="ui-button inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-60"
-              >
-                <Trophy className="size-3.5" />
-                {finalScore != null ? "Submitted" : submitting ? "Submitting…" : "Submit score"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleRetry()}
-                disabled={retrying}
-                className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-              >
-                <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
-                {retrying ? "Shuffling…" : "New board"}
-              </button>
-            </div>
+            {!readOnly && status === "lost" ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRetry()}
+                  disabled={retrying}
+                  className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                >
+                  <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
+                  {retrying ? "Shuffling…" : "New board"}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
 
-      {status === "playing" ? (
+      {!readOnly && status === "playing" ? (
         <div className="ui-card-muted rounded-xl p-4">
           <p className="text-xs font-semibold text-foreground">Power-Up Codes</p>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -1824,24 +1832,21 @@ export function UnmaskedBoard({
         </div>
       ) : null}
 
-      {availablePool.length > 0 ||
-      assemblyFragments.length > 0 ||
-      versesGivenUp.length > 0 ||
-      versesRestored.length > 0 ? (
+      {!readOnly &&
+      !passagesComplete &&
+      (availablePool.length > 0 ||
+        assemblyFragments.length > 0 ||
+        versesRestored.length > 0) ? (
         <div className="overflow-hidden rounded-2xl border border-amber-200/90 bg-gradient-to-b from-amber-50/95 to-amber-50/70 shadow-sm dark:border-amber-800/80 dark:from-amber-950/55 dark:to-amber-950/35">
           <div className="border-b border-amber-200/70 bg-amber-100/45 px-4 py-3.5 dark:border-amber-800/50 dark:bg-amber-950/45">
             <p className="text-sm font-semibold tracking-tight text-amber-950 dark:text-amber-50">
               Passage fragments
             </p>
             <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-amber-900/88 dark:text-amber-200/88">
-              Color = same passage. After the minefield is cleared, tap fragments to add them in order, then{" "}
-              <strong>Check passage</strong> (max {MAX_VERSE_ASSEMBLY_ATTEMPTS} checks per passage).
-            </p>
-            <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-amber-900/88 dark:text-amber-200/88">
-              <strong>Two different numbers:</strong> tags show <strong>line credits</strong> (1 per fragment; longer
-              passages have more). Your <strong>/100</strong> score also has a <strong>Verses</strong> slice worth up to{" "}
-              <strong>30</strong> — that part is based on <strong>how many passages</strong> you restore, not on adding
-              these line credits. Failed checks can cost you a passage&apos;s line credits for good.
+              Color = same passage. After the minefield is cleared, tap fragments to add them in reading order, then{" "}
+              <strong>Check passage</strong>. Each wrong check for the passage you are building adds{" "}
+              {CHECK_PASSAGE_WRONG_PENALTY_SECONDS}s to your time and shows a <strong>citation clue</strong> (e.g. John
+              3:16) for that passage.
             </p>
           </div>
 
@@ -1856,39 +1861,19 @@ export function UnmaskedBoard({
                 {usedVerseKeys.map((vk, i) => {
                   const palette = VERSE_PALETTE[verseColorIndex(vk, usedVerseKeys)];
                   const solved = solvedSet.has(vk);
-                  const given = givenUpSet.has(vk);
-                  const pts = versePtsByKey.get(vk) ?? 0;
-                  const ptsLabel =
-                    solved ? `+${pts} lines`
-                    : given ? `${pts} lines missed`
-                    : `up to ${pts} lines`;
                   return (
                     <span
                       key={vk}
-                      className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-full border border-amber-200/50 px-2.5 py-1 text-[10px] font-semibold shadow-sm dark:border-amber-800/40 ${palette.bg} ${palette.text} ${solved || given ? "opacity-60" : ""}`}
-                      title={
-                        solved ?
-                          `Restored — +${pts} line credits (fragments). The bigger jump on your /100 score is usually from the “Verses” slice (up to 30), not this number.`
-                        : given ? `Answer revealed — ${pts} line credits not earned`
-                        : `Up to ${pts} line credits if you solve this passage (1 per fragment)`
-                      }
+                      className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-full border border-amber-200/50 px-2.5 py-1 text-[10px] font-semibold shadow-sm dark:border-amber-800/40 ${palette.bg} ${palette.text} ${solved ? "opacity-60" : ""}`}
+                      title={solved ? "Restored in correct order" : "Not yet restored"}
                     >
                       <span className={`size-2 shrink-0 rounded-full ${palette.chip}`} aria-hidden />
                       <span className="whitespace-nowrap">Passage {i + 1}</span>
-                      <span className="font-bold opacity-95">
-                        {solved ? `· solved · ${ptsLabel}` : given ? `· revealed · ${ptsLabel}` : `· ${ptsLabel}`}
-                      </span>
+                      <span className="font-bold opacity-95">{solved ? "· solved" : "· pending"}</span>
                     </span>
                   );
                 })}
               </div>
-            ) : null}
-            {usedVerseKeys.length > 0 && totalLineCredits > 0 ? (
-              <p className="text-[11px] leading-snug text-amber-800/85 dark:text-amber-300/85">
-                Tags add up to <strong>{totalLineCredits}</strong> line credits on this board. The{" "}
-                <strong>/100</strong> score&apos;s <strong>Verses</strong> slice (up to <strong>30</strong>) is separate:
-                it grows with <strong>how many passages</strong> you fully restore, not with this sum.
-              </p>
             ) : null}
             {lastSolvedVerse ? (
               <div className="rounded-xl border border-emerald-300/70 bg-emerald-50/90 px-3 py-2.5 text-sm text-emerald-950 shadow-sm dark:border-emerald-800/60 dark:bg-emerald-950/50 dark:text-emerald-50">
@@ -1898,37 +1883,7 @@ export function UnmaskedBoard({
                   </p>
                 ) : null}
                 <p className="mt-1 font-medium leading-relaxed">&ldquo;{lastSolvedVerse.full}&rdquo;</p>
-                {lastSolvedVerse.lineCredits != null && lastSolvedVerse.versesSliceDelta != null ? (
-                  <p className="mt-2 text-[11px] leading-snug text-emerald-900/90 dark:text-emerald-200/90">
-                    <strong>+{lastSolvedVerse.lineCredits}</strong> line credits (fragments) ·{" "}
-                    <strong>+{lastSolvedVerse.versesSliceDelta}</strong> on your /100 &ldquo;Verses&rdquo; score (separate
-                    number)
-                  </p>
-                ) : lastSolvedVerse.lineCredits != null ? (
-                  <p className="mt-2 text-[11px] text-emerald-900/90 dark:text-emerald-200/90">
-                    <strong>+{lastSolvedVerse.lineCredits}</strong> line credits (one per fragment)
-                  </p>
-                ) : null}
               </div>
-            ) : null}
-            {versesGivenUp.length > 0 ? (
-              <ul className="space-y-2 text-sm text-amber-950 dark:text-amber-50">
-                {versesGivenUp.map((vk) => {
-                  const entry = getVerseByKey(vk);
-                  if (!entry) return null;
-                  return (
-                    <li
-                      key={vk}
-                      className="rounded-xl border border-amber-200/85 bg-white/65 px-3 py-2 shadow-sm dark:border-amber-800 dark:bg-amber-950/80"
-                    >
-                      <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
-                        {entry.reference}
-                      </p>
-                      <p className="mt-0.5 text-xs leading-relaxed opacity-95">&ldquo;{entry.full}&rdquo;</p>
-                    </li>
-                  );
-                })}
-              </ul>
             ) : null}
 
             <div>
@@ -2050,6 +2005,27 @@ export function UnmaskedBoard({
         </div>
       ) : null}
 
+      {readOnly && redeemedCodes.length > 0 ? (
+        <div className="ui-card-muted rounded-xl p-4 text-xs text-foreground">
+          <p className="font-semibold">Codes redeemed (Amazing Race)</p>
+          <p className="mt-1 font-mono text-muted-foreground">{redeemedCodes.join(", ")}</p>
+        </div>
+      ) : null}
+
+      {readOnly && verseKeys.length > 0 ? (
+        <div className="ui-card-muted rounded-xl p-4 text-xs text-foreground">
+          <p className="font-semibold">Passage progress</p>
+          <p className="mt-1 text-muted-foreground">
+            Restored: {verseKeys.filter((k) => versesRestored.includes(k)).length}/{verseKeys.length}
+            {verseAssemblyIndices.length > 0 ?
+              ` · ${verseAssemblyIndices.length} fragment(s) in builder`
+            : ""}
+            {passagesComplete ? " · All passages complete" : ""}
+          </p>
+        </div>
+      ) : null}
+
+      {!readOnly ? (
       <div className="ui-card-muted rounded-xl p-4 text-xs leading-relaxed text-foreground">
         <p className="font-semibold text-foreground">How to play</p>
         <ul className="mt-2 list-inside list-disc space-y-1.5">
@@ -2059,23 +2035,25 @@ export function UnmaskedBoard({
           </li>
           <li>Hitting a lie costs 1 heart. 0 hearts = game over.</li>
           <li>
-            Glowing tiles hide passage fragments. Same color = same passage. Tags show <strong>line credits</strong> per
-            passage (fragments on the board). Your <strong>/100</strong> score also has a <strong>Verses</strong> part (up
-            to 30) based on completed passages — not the same as adding line credits. After you clear the board, build
-            the order and <strong>Check passage</strong> — two tries per passage; using both without solving forfeits that
-            passage&apos;s lines and shows the text.
+            Glowing tiles hide passage fragments; same color = same passage. After the minefield is clear, build each
+            passage in order and <strong>Check passage</strong> until every passage is correct. A wrong check adds{" "}
+            {CHECK_PASSAGE_WRONG_PENALTY_SECONDS}s to your clock and reveals which Scripture the passage is from. The run
+            only counts as finished when all passages are solved.
           </li>
           <li>
             Earn power-up codes from camp stations and redeem them above.
           </li>
         </ul>
         <p className="mt-3 rounded-md bg-primary/10 px-3 py-2 text-[11px] text-primary">
-          <strong>Tip:</strong> /100 score = up to 60 board + up to 30 for <strong>passages completed</strong> + up to 10
-          hearts. Line credits on tags are a separate tally (1 per fragment restored). Submit once your run ends.
+          <strong>Tip:</strong> The header timer tracks your run across boards (it does not reset on a new minefield).
+          When you finish every passage, the header shows your <strong>actual</strong> time first, then{" "}
+          <strong>−{REMAINING_HEART_CLOCK_REDUCTION_SECONDS / 60} min</strong> per spare heart you finished with, then
+          your <strong>final</strong> ranked time (actual minus that bonus).
         </p>
       </div>
+      ) : null}
 
-      {process.env.NODE_ENV === "development" ? (
+      {process.env.NODE_ENV === "development" && !readOnly ? (
         <button
           type="button"
           onClick={() => void handleDevClearMinefield()}

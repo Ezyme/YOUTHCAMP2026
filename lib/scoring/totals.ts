@@ -1,4 +1,8 @@
-import type { GameScoring, IGameDefinition } from "@/lib/db/models";
+import type {
+  GameScoring,
+  IGameDefinition,
+  ScoringMode,
+} from "@/lib/db/models";
 import { GameDefinition, GameResult, Team } from "@/lib/db/models";
 import { dbConnect } from "@/lib/db/connect";
 
@@ -15,10 +19,15 @@ export type ScoreBreakdownRow = {
   gameName: string;
   slug: string;
   day: number;
+  category: string;
   placement: number;
   pointsAwarded: number;
   placementPointsRow: number[];
   weight: number;
+  scoringMode: ScoringMode;
+  /** Rubric points for this finish (before weight). Omitted for judge-entered events. */
+  basePlacementPoints?: number;
+  manualPointsMax?: number;
 };
 
 export async function getLeaderboard(
@@ -72,15 +81,27 @@ export async function getTeamBreakdown(
     const g = gameMap.get(String(r.gameId));
     if (!g) continue;
     const sc = g.scoring as GameScoring;
+    const mode = sc.scoringMode ?? "placement_points";
+    const idx = r.placement - 1;
+    const baseOk = idx >= 0 && idx < sc.placementPoints.length;
+    const basePlacementPoints =
+      mode === "manual_points" || !baseOk
+        ? undefined
+        : (sc.placementPoints[idx] ?? 0);
     rows.push({
       gameId: String(g._id),
       gameName: g.name,
       slug: g.slug,
       day: g.day,
+      category: g.category,
       placement: r.placement,
       pointsAwarded: r.pointsAwarded,
       placementPointsRow: [...sc.placementPoints],
       weight: sc.weight,
+      scoringMode: mode,
+      basePlacementPoints,
+      manualPointsMax:
+        mode === "manual_points" ? sc.manualPointsMax : undefined,
     });
   }
   rows.sort((a, b) => a.day - b.day || a.gameName.localeCompare(b.gameName));
