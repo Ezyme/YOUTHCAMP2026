@@ -11,7 +11,7 @@ import {
   devRevealAllSafeTiles,
   sortPersistedFragmentsForBoard,
   trySolveVerseAssembly,
-  MAX_VERSE_ASSEMBLY_ATTEMPTS,
+  CHECK_PASSAGE_WRONG_PENALTY_SECONDS,
   type GameState,
 } from "@/lib/games/unmasked/engine";
 import { getVerseByKey } from "@/lib/games/unmasked/verses";
@@ -105,10 +105,8 @@ export async function POST(req: Request) {
         verseKey: f.verseKey ?? legacyKey,
       }));
       const restored = (d.versesRestored as string[]) ?? [];
-      const versesGivenUp = (d.versesGivenUp as string[]) ?? [];
-      const attemptsByKey = {
-        ...((d.verseCheckAttemptsByKey as Record<string, number> | undefined) ?? {}),
-      };
+      const passagesComplete = Boolean(d.passagesComplete);
+      const penaltyBase = Number(d.checkPassagePenaltySeconds ?? 0);
 
       const baseState = () => ({
         revealed: d.revealed,
@@ -120,8 +118,8 @@ export async function POST(req: Request) {
         powerUps: d.powerUps,
         status: d.status,
         versesRestored: restored,
-        versesGivenUp,
-        verseCheckAttemptsByKey: attemptsByKey,
+        passagesComplete,
+        checkPassagePenaltySeconds: penaltyBase,
         verseScore: Number(d.verseScore ?? 0),
         verseAssemblyIndices: assembly,
       });
@@ -154,37 +152,28 @@ export async function POST(req: Request) {
         });
       }
 
-      const attemptKey = metas[0]!.verseKey;
-      const givenUpSet = new Set(versesGivenUp);
-      if (givenUpSet.has(attemptKey)) {
-        return NextResponse.json({
-          result: {
-            type: "verse_check",
-            ok: false,
-            reason: "No check attempts left for this passage — the answer was already shown.",
-          },
-          state: baseState(),
-        });
-      }
-
       const solved = new Set(restored);
       const verdict = trySolveVerseAssembly(assembly, frags, solved);
 
       if (verdict.ok) {
         const nextRestored = [...restored, verdict.verseKey];
-        const verseScore = Number(d.verseScore ?? 0) + verdict.pointsAdded;
-        const nextAttempts = { ...attemptsByKey };
-        delete nextAttempts[verdict.verseKey];
+        const verseKeyList = (d.verseKeys as string[]) ?? [];
+        const uniqKeys = [...new Set(verseKeyList)];
+        const allPassagesDone =
+          uniqKeys.length > 0 && uniqKeys.every((k) => nextRestored.includes(k));
+        const finishedAt =
+          allPassagesDone && !d.finishedAt ? new Date() : (d.finishedAt as Date | undefined);
 
         await UnmaskedState.updateOne(
           { sessionId: sid, teamId: tid },
           {
             $set: {
+              lastPlayActivityAt: new Date(),
               versesRestored: nextRestored,
-              verseScore,
               verseAssemblyIndices: [],
-              verseCheckAttemptsByKey: nextAttempts,
-              versesGivenUp,
+              ...(allPassagesDone ?
+                { passagesComplete: true as const, ...(finishedAt ? { finishedAt } : {}) }
+              : {}),
             },
           },
         );
@@ -194,8 +183,6 @@ export async function POST(req: Request) {
             type: "verse_check",
             ok: true,
             verseKey: verdict.verseKey,
-            pointsAdded: verdict.pointsAdded,
-            verseScore,
           },
           state: {
             revealed: d.revealed,
@@ -207,77 +194,37 @@ export async function POST(req: Request) {
             powerUps: d.powerUps,
             status: d.status,
             versesRestored: nextRestored,
-            versesGivenUp,
-            verseCheckAttemptsByKey: nextAttempts,
-            verseScore,
-            verseAssemblyIndices: [],
-          },
-        });
-      }
-
-      const nextCount = (attemptsByKey[attemptKey] ?? 0) + 1;
-      attemptsByKey[attemptKey] = nextCount;
-
-      if (nextCount >= MAX_VERSE_ASSEMBLY_ATTEMPTS) {
-        const nextGivenUp = versesGivenUp.includes(attemptKey) ? versesGivenUp : [...versesGivenUp, attemptKey];
-
-        await UnmaskedState.updateOne(
-          { sessionId: sid, teamId: tid },
-          {
-            $set: {
-              verseCheckAttemptsByKey: attemptsByKey,
-              versesGivenUp: nextGivenUp,
-              verseAssemblyIndices: [],
-            },
-          },
-        );
-
-        const entry = getVerseByKey(attemptKey);
-        return NextResponse.json({
-          result: {
-            type: "verse_check",
-            ok: false,
-            forfeited: true,
-            verseKey: attemptKey,
-            reason: verdict.reason,
-            reference: entry?.reference ?? "",
-            full: entry?.full ?? "",
-          },
-          state: {
-            revealed: d.revealed,
-            flagged: d.flagged,
-            hearts: d.hearts,
-            maxHearts: d.maxHearts,
-            liesHit: d.liesHit,
-            shielded: d.shielded,
-            powerUps: d.powerUps,
-            status: d.status,
-            versesRestored: restored,
-            versesGivenUp: nextGivenUp,
-            verseCheckAttemptsByKey: attemptsByKey,
+            passagesComplete: allPassagesDone,
+            checkPassagePenaltySeconds: penaltyBase,
             verseScore: Number(d.verseScore ?? 0),
             verseAssemblyIndices: [],
           },
         });
       }
 
+      const attemptKey = metas[0]!.verseKey;
+      const shouldPenalize = verdict.reason !== "That passage is already restored.";
+      const nextPenalty = shouldPenalize ? penaltyBase + CHECK_PASSAGE_WRONG_PENALTY_SECONDS : penaltyBase;
+      const refClue = shouldPenalize ? getVerseByKey(attemptKey)?.reference : undefined;
+
       await UnmaskedState.updateOne(
         { sessionId: sid, teamId: tid },
         {
           $set: {
-            verseCheckAttemptsByKey: attemptsByKey,
+            lastPlayActivityAt: new Date(),
             verseAssemblyIndices: assembly,
+            checkPassagePenaltySeconds: nextPenalty,
           },
         },
       );
 
-      const attemptsRemaining = MAX_VERSE_ASSEMBLY_ATTEMPTS - nextCount;
       return NextResponse.json({
         result: {
           type: "verse_check",
           ok: false,
           reason: verdict.reason,
-          attemptsRemaining,
+          referenceClue: refClue,
+          penaltySecondsAdded: shouldPenalize ? CHECK_PASSAGE_WRONG_PENALTY_SECONDS : 0,
         },
         state: {
           revealed: d.revealed,
@@ -289,8 +236,8 @@ export async function POST(req: Request) {
           powerUps: d.powerUps,
           status: d.status,
           versesRestored: restored,
-          versesGivenUp,
-          verseCheckAttemptsByKey: attemptsByKey,
+          passagesComplete,
+          checkPassagePenaltySeconds: nextPenalty,
           verseScore: Number(d.verseScore ?? 0),
           verseAssemblyIndices: assembly,
         },
@@ -358,22 +305,38 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
 
-    const finishedAt =
-      state.status !== "playing" && !doc.finishedAt ? new Date() : doc.finishedAt;
+    const vKeys = (d.verseKeys as string[]) ?? [];
+    const noVersesOnBoard = vKeys.length === 0;
+    const prevFinished = doc.finishedAt as Date | undefined;
+    let nextFinishedAt: Date | undefined = prevFinished;
+    let nextPassagesComplete = Boolean(d.passagesComplete);
+
+    if (state.status === "lost" && !prevFinished) {
+      nextFinishedAt = new Date();
+    } else if (state.status === "won" && noVersesOnBoard && !prevFinished) {
+      nextFinishedAt = new Date();
+      nextPassagesComplete = true;
+    }
+
+    const revealSet: Record<string, unknown> = {
+      revealed: [...state.revealed],
+      flagged: [...state.flagged],
+      hearts: state.hearts,
+      maxHearts: state.maxHearts,
+      liesHit: state.liesHit,
+      shielded: state.shielded,
+      powerUps: state.powerUps,
+      status: state.status,
+      passagesComplete: nextPassagesComplete,
+    };
+    if (nextFinishedAt) revealSet.finishedAt = nextFinishedAt;
 
     await UnmaskedState.updateOne(
       { sessionId: sid, teamId: tid },
       {
         $set: {
-          revealed: [...state.revealed],
-          flagged: [...state.flagged],
-          hearts: state.hearts,
-          maxHearts: state.maxHearts,
-          liesHit: state.liesHit,
-          shielded: state.shielded,
-          powerUps: state.powerUps,
-          status: state.status,
-          finishedAt,
+          ...revealSet,
+          lastPlayActivityAt: new Date(),
         },
       },
     );

@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { plainGameScoring } from "@/lib/admin/plain-game-scoring";
 import { dbConnect } from "@/lib/db/connect";
 import { GameDefinition } from "@/lib/db/models";
 import { GameForm } from "@/components/admin/game-form";
@@ -26,7 +27,7 @@ export default async function EditGamePage({ params }: Props) {
     order: g.order,
     rulesMarkdown: g.rulesMarkdown,
     settings: g.settings as Record<string, unknown>,
-    scoring: g.scoring,
+    scoring: plainGameScoring(g.scoring),
   };
 
   return (

@@ -19,8 +19,6 @@ export type MirrorSlice = {
   status: "playing" | "won" | "lost";
   powerUps: { type: PowerUpType; used: boolean }[];
   versesRestored?: string[];
-  versesGivenUp?: string[];
-  verseScore?: number;
   verseAssemblyIndices?: number[];
   updatedAt: number;
 };

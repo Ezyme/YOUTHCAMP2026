@@ -1,7 +1,12 @@
 import Link from "next/link";
-import { ArrowRight, Grid3x3, Trophy, Settings2, Shield, Sparkles } from "lucide-react";
+import { cookies } from "next/headers";
+import { ArrowRight, Grid3x3, Trophy, Shield, Sparkles } from "lucide-react";
+import { CAMP_AUTH_COOKIE } from "@/lib/camp/auth";
 
-export default function Home() {
+export default async function Home() {
+  const jar = await cookies();
+  const campLoggedIn = jar.get(CAMP_AUTH_COOKIE)?.value === "1";
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-10 px-4 py-10 sm:px-6">
       <section className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-b from-card to-muted px-6 py-10 shadow-sm">
@@ -35,17 +40,19 @@ export default function Home() {
             <Trophy className="size-4" />
             Leaderboard
           </Link>
-          <Link
-            href="/login"
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-5 py-3 text-sm font-medium text-card-foreground transition hover:bg-muted"
-          >
-            <Shield className="size-4" />
-            Team Login
-          </Link>
+          {!campLoggedIn ? (
+            <Link
+              href="/login"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-5 py-3 text-sm font-medium text-card-foreground transition hover:bg-muted"
+            >
+              <Shield className="size-4" />
+              Team Login
+            </Link>
+          ) : null}
         </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <section className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-2xl border border-border bg-card p-5">
           <Sparkles className="size-8 text-accent" />
           <h2 className="mt-3 text-lg tracking-tight text-card-foreground">
@@ -76,22 +83,6 @@ export default function Home() {
             className="mt-4 inline-flex text-sm font-medium text-primary hover:underline"
           >
             Open play
-          </Link>
-        </div>
-        <div className="rounded-2xl border border-border bg-card p-5">
-          <Settings2 className="size-8 text-primary" />
-          <h2 className="mt-3 text-lg tracking-tight text-card-foreground">
-            Final Solving
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            The finale — combine clues earned through the Amazing Race and
-            submit your answer to clear the final challenge.
-          </p>
-          <Link
-            href="/play/final-solving"
-            className="mt-4 inline-flex text-sm font-medium text-primary hover:underline"
-          >
-            Play finale
           </Link>
         </div>
       </section>

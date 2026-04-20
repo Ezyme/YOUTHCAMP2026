@@ -1,3 +1,4 @@
+import { ResetCampButton } from "@/components/admin/reset-camp-button";
 import { SeedButton } from "@/components/admin/seed-button";
 import Link from "next/link";
 
@@ -19,11 +20,21 @@ export default function AdminHomePage() {
           <SeedButton />
         </div>
       </div>
+      <div className="ui-card mt-6 rounded-2xl p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-card-foreground">Reset camp</h2>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Clears all facilitator scores, mind game and Unmasked progress, and power-up
+          redemptions for the active session. Game definitions and team logins are
+          unchanged.
+        </p>
+        <div className="mt-4">
+          <ResetCampButton />
+        </div>
+      </div>
       <ul className="mt-8 grid gap-3 sm:grid-cols-2">
         {[
           { href: "/admin/games", t: "Games", d: "CRUD definitions & scoring rows" },
           { href: "/admin/scoring", t: "Scoring", d: "Enter 1st–6th per game" },
-          { href: "/admin/clues", t: "Clues", d: "Per-team AR clues" },
           { href: "/admin/power-ups", t: "Power-ups", d: "Unmasked game power-up codes" },
           { href: "/leaderboard", t: "Leaderboard", d: "Public totals" },
         ].map((x) => (

@@ -736,8 +736,14 @@ export function trySolveVerseAssembly(
   return { ok: true, verseKey: key, pointsAdded };
 }
 
-/** Failed checks per passage key before the passage is forfeited (shown without score). */
-export const MAX_VERSE_ASSEMBLY_ATTEMPTS = 2;
+/** Seconds added to the run timer for each wrong “Check passage” (except redundant checks). */
+export const CHECK_PASSAGE_WRONG_PENALTY_SECONDS = 30;
+
+/**
+ * When a run is fully complete, each heart still left subtracts this many seconds from the
+ * displayed clock (2 minutes per spare heart).
+ */
+export const REMAINING_HEART_CLOCK_REDUCTION_SECONDS = 120;
 
 export function getDifficultyLies(gridSize: number, difficulty: string): number {
   const total = gridSize * gridSize;
