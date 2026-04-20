@@ -1267,7 +1267,8 @@ export function UnmaskedBoard({
     }
     return counts;
   }, [powerUps]);
-  const cellRem = board ? Math.min(2.85, 58 / board.gridSize) : 2.85;
+  /** Per-cell cap (rem) so huge boards stay readable; dense boards use up to ~58rem total width. */
+  const cellRem = board ? Math.min(4, 58 / board.gridSize) : 3.625;
 
   const usedVerseKeys = useMemo(() => [...new Set(verseFragments.map((f) => f.verseKey))], [verseFragments]);
 
@@ -1579,12 +1580,12 @@ export function UnmaskedBoard({
             </div>
           ) : null}
           <div
-            className={`rounded-xl bg-emerald-50/95 p-2 ring-1 ring-emerald-900/10 dark:ring-emerald-100/25 ${
+            className={`w-full rounded-xl bg-emerald-50/95 p-0 ring-1 ring-emerald-900/10 dark:ring-emerald-100/25 sm:p-1.5 ${
               flagMode ? "ring-2 ring-amber-400/70" : ""
             }`}
           >
           <div
-            className={`unmasked-board mx-auto grid w-full gap-0.5 rounded-lg p-1 transition sm:gap-1 ${
+            className={`unmasked-board mx-auto grid w-full gap-px rounded-md p-0.5 transition sm:gap-0.5 ${
               readOnly ? "pointer-events-none" : ""
             } ${
               flagMode
@@ -1593,7 +1594,7 @@ export function UnmaskedBoard({
             }`}
             style={{
               gridTemplateColumns: `repeat(${board.gridSize}, minmax(0, 1fr))`,
-              maxWidth: `min(99vw, ${board.gridSize * cellRem}rem)`,
+              maxWidth: `min(100%, min(96vw, ${board.gridSize * cellRem}rem))`,
             }}
           >
             {board.tiles.map((tile, i) => {
@@ -1618,7 +1619,7 @@ export function UnmaskedBoard({
 
           if (isRevealed) {
             if (isLie) {
-              const cls = `flex aspect-square min-h-0 items-center justify-center rounded-lg text-[0.65rem] sm:text-xs ${
+              const cls = `flex aspect-square min-h-0 items-center justify-center rounded-sm text-[0.65rem] sm:text-xs ${
                 isHighlighted && highlightMode === "truth_radar" ?
                   "animate-pulse border border-red-400 bg-red-200"
                 : "border border-red-200/90 bg-red-100"
@@ -1641,7 +1642,7 @@ export function UnmaskedBoard({
               );
             }
             if (isVerse) {
-              const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-lg border-2 border-amber-200/80 ${
+              const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-sm border-2 border-amber-200/80 ${
                 isHighlighted && highlightMode === "verse_compass" ?
                   "ring-2 ring-violet-400 ring-offset-1 ring-offset-emerald-50"
                 : ""
@@ -1684,7 +1685,7 @@ export function UnmaskedBoard({
                 </div>
               );
             }
-            const cls = `flex aspect-square min-h-0 items-center justify-center rounded-lg border border-transparent bg-white ${
+            const cls = `flex aspect-square min-h-0 items-center justify-center rounded-sm border border-transparent bg-white ${
               isHighlighted && (highlightMode === "reveal" || highlightMode === "safe_opening" || highlightMode === "gentle_step") ?
                 "animate-pulse border border-emerald-400 bg-emerald-100"
               : ""
@@ -1725,7 +1726,7 @@ export function UnmaskedBoard({
               onClick={() => void handleTileClick(i)}
               onContextMenu={(e) => handleContextMenu(e, i)}
               disabled={status !== "playing"}
-              className={`flex aspect-square min-h-0 items-center justify-center rounded-lg border text-[0.65rem] font-medium transition sm:text-xs ${
+              className={`flex aspect-square min-h-0 items-center justify-center rounded-sm border text-[0.65rem] font-medium transition sm:text-xs ${
                 isScoutPeek
                   ? scoutPeek.kind === "lie"
                     ? "border-red-400 bg-red-100"
