@@ -192,3 +192,8 @@ main h3 {
 .unmasked-board button {
   touch-action: none;
 }
+
+/* Square grid cells read as rectangles (not pills); matches rounded-sm on tiles. */
+.unmasked-board > * {
+  border-radius: 0.125rem;
+}
