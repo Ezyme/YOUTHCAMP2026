@@ -19,7 +19,8 @@ import {
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   useSensor,
   useSensors,
@@ -420,6 +421,7 @@ export function UnmaskedBoard({
 
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFiredRef = useRef(false);
   const tileRefs = useRef<Map<number, HTMLElement | null>>(new Map());
   const tileRefSetters = useMemo(() => {
     const count = board?.tiles.length ?? 0;
@@ -482,9 +484,11 @@ export function UnmaskedBoard({
     setTipPowerUp(null);
   }, []);
 
-  const startPowerUpTip = useCallback((type: PowerUpType, delay = 450) => {
+  const startPowerUpTip = useCallback((type: PowerUpType, delay = 450, trackLongPress = false) => {
     if (tipTimer.current) clearTimeout(tipTimer.current);
+    if (trackLongPress) longPressFiredRef.current = false;
     tipTimer.current = setTimeout(() => {
+      if (trackLongPress) longPressFiredRef.current = true;
       setTipPowerUp(type);
       // Auto-dismiss the tooltip after a moment so it never sticks around.
       tipTimer.current = setTimeout(() => setTipPowerUp(null), 3000);
@@ -1440,7 +1444,10 @@ export function UnmaskedBoard({
   );
 
   const dndSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    // Distance-based activation matches desktop. Chip has touch-action:none so the
+    // browser yields touch ownership; a clean tap (<6 px movement) still fires onClick.
+    useSensor(TouchSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
@@ -1561,7 +1568,7 @@ export function UnmaskedBoard({
         type="button"
         onClick={onTapReturn}
         disabled={disabled}
-        className={`max-w-full rounded-xl border px-2.5 py-1.5 text-left text-[0.7rem] font-medium leading-snug shadow-sm transition ${palette.ring} ${palette.bg} ${palette.text} ${
+        className={`max-w-full touch-none select-none rounded-xl border px-2.5 py-1.5 text-left text-[0.7rem] font-medium leading-snug shadow-sm transition [-webkit-touch-callout:none] ${palette.ring} ${palette.bg} ${palette.text} ${
           disabled ? "cursor-not-allowed opacity-60" : "cursor-grab active:cursor-grabbing"
         } ${isDragging ? "ring-2 ring-primary/40 shadow-md scale-[1.02]" : ""}`}
         {...attributes}
@@ -1769,10 +1776,19 @@ export function UnmaskedBoard({
                     <div title={title}>
                       <button
                         type="button"
-                        onClick={() => isReady && void handleUsePowerUp(type)}
+                        onClick={() => {
+                          if (longPressFiredRef.current) {
+                            longPressFiredRef.current = false;
+                            return;
+                          }
+                          if (isReady) void handleUsePowerUp(type);
+                        }}
                         onMouseEnter={() => startPowerUpTip(type, 180)}
                         onMouseLeave={cancelPowerUpTip}
-                        onPointerDown={() => startPowerUpTip(type)}
+                        onPointerDown={(e) => {
+                          const isTouchLike = e.pointerType === "touch" || e.pointerType === "pen";
+                          startPowerUpTip(type, 450, isTouchLike);
+                        }}
                         onPointerUp={cancelPowerUpTip}
                         onPointerLeave={cancelPowerUpTip}
                         onPointerCancel={cancelPowerUpTip}
