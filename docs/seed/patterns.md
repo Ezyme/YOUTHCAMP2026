@@ -69,7 +69,11 @@ Names, colors, sortOrder are inline in the seed route ([seed route:51-58](../../
 
 Could be DRYed. Today the duplication is small enough not to matter — but if you ever change the default colors, change both places.
 
-## 10. `RUBRIC_100` markdown string
+## 10. `rulesMarkdown` is rendered as actual Markdown
+
+`rulesMarkdown` is rendered as actual Markdown on the rules page (`app/games/[slug]/page.tsx` uses `react-markdown` + `remark-gfm`). Use `**bold**`, headings, and `-` lists freely — they will render as formatted HTML, not raw text. Keep rules short and structured: see the `unmasked` entry in [camp-games.ts](../../lib/seed/camp-games.ts) for an example with a title, mechanics paragraph, an action list, and a code-unlock note in four short blocks.
+
+## 11. `RUBRIC_100` markdown string
 
 ```ts
 const RUBRIC_100 =

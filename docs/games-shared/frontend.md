@@ -22,9 +22,11 @@ Server. `dynamic = "force-dynamic"`. 404s on:
 - Day 0 (merit reference)
 - `!isPlayable && !teamHasGameResult` (scoreboard-reveal gate)
 
-Renders rules markdown (in a `<pre>` wrapper to preserve markdown line breaks — there's no MD parser today) + scoring summary + Play button (or "coming soon" placeholder).
+Renders rules markdown + scoring summary + Play button (or "coming soon" placeholder).
 
-Rules display uses Tailwind's `prose` plugin classes. The markdown is plain text wrapped, not rendered to HTML — see [gotchas.md](./gotchas.md).
+Game rules are stored in the `rulesMarkdown` model field as Markdown. The dedicated rules page at [`app/games/[slug]/page.tsx`](../../app/games/[slug]/page.tsx) renders it via `react-markdown` + `remark-gfm`, wrapped in an `<article className="prose prose-zinc ... dark:prose-invert">` (the card classes — `rounded-xl bg-muted p-4` — sit on the `<article>`, no inner `<pre>`). The play-page teaser at [`app/play/[gameSlug]/page.tsx`](../../app/play/[gameSlug]/page.tsx) slices the first 200 chars and renders as plain text — markdown syntax shows literally there (acceptable for the teaser).
+
+The `prose` utilities are powered by the Tailwind typography plugin loaded in [globals.css](../../app/globals.css) (`@plugin "@tailwindcss/typography";`).
 
 ### `/play/[gameSlug]` — [app/play/[gameSlug]/page.tsx](../../app/play/[gameSlug]/page.tsx)
 

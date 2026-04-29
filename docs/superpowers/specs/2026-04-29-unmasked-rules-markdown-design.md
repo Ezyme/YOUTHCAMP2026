@@ -105,7 +105,7 @@ Once the board is cleared:
 - Drag fragments from the **Stack** into the **Builder row** in reading order.
 - Tap **Check passage** to score. Each wrong check adds 30 s to your time and reveals a citation clue.
 
-**Amazing Race codes** unlock hearts, reveals, scouts, shields, safe openings, Truth Radar, Lie Pin, Verse Compass, and Gentle Step.`,
+**Amazing Race codes** unlock Abundant Grace, Glimmer of Hope, Prophetic Vision, Armor of Truth, Divine Blueprint, Light of Discernment, Exposing the Dark, Living Word, and Steadfast Path.`,
 ```
 
 (~70 words, four paragraph blocks: title, reveal mechanic, builder mechanic, code unlocks. Backtick template-literal lets us keep the line breaks readable in the source.)

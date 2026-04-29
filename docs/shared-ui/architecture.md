@@ -87,6 +87,8 @@ The `<Toaster>` is mounted in the root layout with `visibleToasts={2}` — even 
 
 [`app/globals.css`](../../app/globals.css) imports Tailwind v4's `@import "tailwindcss"` and defines CSS-custom-properties for theme colors (`--background`, `--foreground`, `--card`, etc.). Dark mode flips them via `[class~="dark"]` selectors.
 
+The Tailwind typography plugin is loaded via `@plugin "@tailwindcss/typography";` in `globals.css`, powering the `prose` family of utilities used on the game-rules page.
+
 It also defines a few utility classes used across the app:
 - `ui-card` — card surface
 - `ui-button`, `ui-button-secondary`, `ui-button-danger` — button styles

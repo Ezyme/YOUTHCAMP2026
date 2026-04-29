@@ -169,8 +169,15 @@ export const CAMP_GAMES: SeedGame[] = [
       verseCount: 4,
       versePoolKeys: [] as string[],
     },
-    rulesMarkdown:
-      "**Identity Minefield** — default **20×20** board (~**28%** lies on **Intense**). Multiple Scripture passages (no references), fragment stack & builder, passage checks for score. Tap to reveal, long-press to flag. Use the side power-up rail for hover tips and locked/redeemed status. Amazing Race codes can unlock Abundant Grace, Glimmer of Hope, Prophetic Vision, Armor of Truth, Divine Blueprint, Light of Discernment, Exposing the Dark, Living Word, and Steadfast Path.",
+    rulesMarkdown: `**Identity Minefield**
+
+Reveal every safe tile on the 20×20 board (~28% lies on Intense). Tap to reveal, long-press to flag a suspected lie.
+
+Once the board is cleared:
+- Drag fragments from the **Stack** into the **Builder row** in reading order.
+- Tap **Check passage** to score. Each wrong check adds 30 s to your time and reveals a citation clue.
+
+**Amazing Race codes** unlock Abundant Grace, Glimmer of Hope, Prophetic Vision, Armor of Truth, Divine Blueprint, Light of Discernment, Exposing the Dark, Living Word, and Steadfast Path.`,
   },
   {
     name: "Flag (Camper's Night)",

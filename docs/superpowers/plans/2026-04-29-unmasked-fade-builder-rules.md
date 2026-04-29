@@ -166,7 +166,7 @@ Once the board is cleared:
 - Drag fragments from the **Stack** into the **Builder row** in reading order.
 - Tap **Check passage** to score. Each wrong check adds 30 s to your time and reveals a citation clue.
 
-**Amazing Race codes** unlock hearts, reveals, scouts, shields, safe openings, Truth Radar, Lie Pin, Verse Compass, and Gentle Step.`,
+**Amazing Race codes** unlock Abundant Grace, Glimmer of Hope, Prophetic Vision, Armor of Truth, Divine Blueprint, Light of Discernment, Exposing the Dark, Living Word, and Steadfast Path.`,
 ```
 
 If the existing line uses single quotes, switching to backticks may require escaping nothing (no backticks or `${}` in the new content). If your editor flags any lint rule about preferring single quotes, ignore — the multiline content justifies the backtick form.

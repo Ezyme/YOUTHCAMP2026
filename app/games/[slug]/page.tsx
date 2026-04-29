@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { dbConnect } from "@/lib/db/connect";
 import {
   requireCampTeamForGameRoute,
@@ -79,10 +81,10 @@ export default async function GameDetailPage({ params }: Props) {
       </div>
 
       {g.rulesMarkdown ? (
-        <article className="prose prose-zinc mt-6 max-w-none text-sm dark:prose-invert">
-          <pre className="whitespace-pre-wrap rounded-xl bg-muted p-4 font-sans text-foreground">
+        <article className="prose prose-zinc mt-6 max-w-none rounded-xl bg-muted p-4 text-sm dark:prose-invert">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {g.rulesMarkdown}
-          </pre>
+          </ReactMarkdown>
         </article>
       ) : null}
 
