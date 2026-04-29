@@ -49,7 +49,7 @@ Two paths:
 - **Auto-apply** (`extra_heart`, `shield`): never armed; redemption itself applies. The "Activate" button on inventory is hidden.
 - **Armed** (rest): clicking "Use" sets `armedPowerUp`. The board repaints with a banner ("Scout armed — tap a hidden tile…"). Tapping a tile dispatches `action: "use_powerup"` with the relevant index/axis params. Server reconciles state.
 
-For `truth_radar`, the player taps a tile, then a row/col modal appears. Both inputs are sent in one POST.
+For `truth_radar`, the player taps a tile, then a small floating chooser ("Row" / "Column") pops up anchored next to that tile (`TruthRadarChooser`, defined inline above `UnmaskedBoard`). Edge-flip rules keep it inside the grid wrapper: it appears below for top-row tiles, above otherwise; horizontally aligned to the right of left-edge tiles, to the left of right-edge tiles, centered otherwise. Picking an axis dispatches `handleTruthRadarAxis(axis)` and both inputs hit the server in one POST. Escape or a click outside the grid cancels.
 
 ### Verse builder
 
@@ -61,6 +61,13 @@ On failure: penalty seconds accrue, and a toast shows the reference clue (e.g. "
 ### Run timer display
 
 Computed client-side from `startedAt + (now - startedAt) - checkPassagePenaltySeconds + ...`. The component reads `REMAINING_HEART_CLOCK_REDUCTION_SECONDS` (120s per spare heart on completion) for the final-score display.
+
+### Layout-shift slots
+
+To prevent the grid from jumping when transient UI appears, two ancestors of the board hold reserved space:
+
+- **Armed banner** — a permanent `min-h-[1.75rem]` flex container above the grid. The chip inside renders only when `activePowerUp` is set, but the slot height never changes.
+- **Game-over panel** — a permanent `min-h-[6.5rem] sm:min-h-[5.5rem]` block beneath the grid. The win/loss panel fills the slot when the run ends; during play the slot is empty whitespace. This avoids reflowing the verse builder beneath the board.
 
 ### "New board" gate
 

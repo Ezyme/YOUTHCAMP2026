@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:/Codes/YouthCamp Game\" rev-parse HEAD)",
+      "Bash(git -C \"c:/Codes/YouthCamp Game\" branch --show-current)",
+      "Bash(git stash *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(echo \"LINT_EXIT=$?\")"
+    ]
+  }
+}
