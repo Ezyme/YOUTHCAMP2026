@@ -8,9 +8,9 @@ Domain terminology used across the codebase. When in doubt, this is canon.
 
 **Amazing Race** — One of the camp's six pillars (30% of the /100 rubric). A single `GameDefinition` row with `engineKey: "config_only"`. The two playable engines (Mindgame, Unmasked) are *stations* within the Amazing Race but don't separately score on the leaderboard (`weight: 0`).
 
-**Armed power-up** — An Unmasked power-up that requires the player to tap a target tile after activation. Opposite of *auto-apply*. Includes Scout, Truth Radar, Lie Pin, Verse Compass, Gentle Step.
+**Armed power-up** — An Unmasked power-up that requires the player to tap a target tile after activation. Opposite of *auto-apply*. Includes Prophetic Vision (`scout`), Light of Discernment (`truth_radar`), Exposing the Dark (`lie_pin`), Living Word (`verse_compass`), Steadfast Path (`gentle_step`).
 
-**Auto-apply power-up** — An Unmasked power-up that takes effect immediately on redemption (no targeting). Includes Extra Heart, Shield. The corresponding inventory entry is marked `used: true` to prevent double-counting.
+**Auto-apply power-up** — An Unmasked power-up that takes effect immediately on redemption (no targeting). Includes Abundant Grace (`extra_heart`), Armor of Truth (`shield`). The corresponding inventory entry is marked `used: true` to prevent double-counting.
 
 ## B
 

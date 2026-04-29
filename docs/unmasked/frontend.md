@@ -42,18 +42,24 @@ The board layout (seed/gridSize/totalLies/verseFragments) is fetched once on mou
 
 `applyFlagLocal` short-circuits if the engine rejects (game over, already revealed) — no API call.
 
+### Verse-tile celebration
+
+When a verse tile is revealed during play, it shows the magical styling (amber border, center sparkle/number, corner sparkle) for 2 s, then fades over 700 ms (`transition-[background-color,border-color,color] duration-700 ease-out`) to look identical to a normal revealed safe tile. State: `freshVerseTiles: Set<number>` plus a `verseFadeTimers` ref of `setTimeout` ids. Population: `applyRevealLocal`'s `result.floodRevealed` for taps; per-power-up call sites for server-side reveals (Light of Discernment, Living Word, Steadfast Path, Divine Blueprint, Glimmer of Hope); a `prev → next` diff in `maybeReconcile` as a backstop. Cleanup: `handleRetry` clears all timers and the set; component unmount also clears.
+
+Reload mid-game: `freshVerseTiles` is empty on mount, so already-revealed verse tiles render in the matured (white-bg) state immediately — no replay celebration.
+
 ### Power-up usage
 
 Two paths:
 
 - **Auto-apply** (`extra_heart`, `shield`): never armed; redemption itself applies. The "Activate" button on inventory is hidden.
-- **Armed** (rest): clicking "Use" sets `armedPowerUp`. The board repaints with a banner ("Scout armed — tap a hidden tile…"). Tapping a tile dispatches `action: "use_powerup"` with the relevant index/axis params. Server reconciles state.
+- **Armed** (rest): clicking "Use" sets `armedPowerUp`. The board repaints with a banner ("Prophetic Vision armed — tap a hidden tile…"). Tapping a tile dispatches `action: "use_powerup"` with the relevant index/axis params. Server reconciles state.
 
 For `truth_radar`, the player taps a tile, then a small floating chooser ("Row" / "Column") pops up anchored next to that tile (`TruthRadarChooser`, defined inline above `UnmaskedBoard`). Edge-flip rules keep it inside the grid wrapper: it appears below for top-row tiles, above otherwise; horizontally aligned to the right of left-edge tiles, to the left of right-edge tiles, centered otherwise. Picking an axis dispatches `handleTruthRadarAxis(axis)` and both inputs hit the server in one POST. Escape or a click outside the grid cancels.
 
 ### Verse builder
 
-A horizontal strip below the board. Players drag fragments from a "stack" panel into the strip. The order matters. "Check passage" POSTs `action: "check_verse"` with `assemblyIndices`.
+A horizontal strip below the board. Players tap fragments in a "stack" panel to add them to the strip, and reorder within the strip by dragging chips themselves (`@dnd-kit/sortable`, with a 6 px activation distance so taps don't trigger drag). Tap a chip without dragging to return it to the stack. The order matters. "Check passage" POSTs `action: "check_verse"` with `assemblyIndices`.
 
 On success: fragment chips animate to the "Restored passages" list, and `verseScore` ticks up.
 On failure: penalty seconds accrue, and a toast shows the reference clue (e.g. "Psalm 139:14") as a hint without revealing the full text.
@@ -86,5 +92,5 @@ Written after every successful reveal/flag/power-up/redeem/verse-check. Cleared 
 `showError` / `showSuccess` from [`lib/ui/toast.ts`](../../lib/ui/toast.ts). The component uses them for:
 - Wrong code (`Invalid code`, `Code not for your team`)
 - Wrong verse check (with reference clue in description)
-- Power-up not available (e.g. arming Scout when no hidden tiles)
+- Power-up not available (e.g. arming Prophetic Vision when no hidden tiles)
 - Game over / win moments

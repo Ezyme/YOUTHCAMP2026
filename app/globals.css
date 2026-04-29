@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* Brand: teal primary, coral/red accent — Identity Camp / Pastor’s Corner palette */
 :root {

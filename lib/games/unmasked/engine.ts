@@ -479,7 +479,7 @@ export function applyPowerUp(
     let pick: number;
     if (t !== undefined && Number.isInteger(t) && t >= 0 && t < total) {
       if (state.revealed.has(t)) {
-        return { success: false, reason: "Scout needs a hidden tile." };
+        return { success: false, reason: "Prophetic Vision needs a hidden tile." };
       }
       pick = t;
     } else {
@@ -532,10 +532,10 @@ export function applyPowerUp(
       targetIndex < 0 ||
       targetIndex >= total
     ) {
-      return { success: false, reason: "Truth Radar needs a valid target tile." };
+      return { success: false, reason: "Light of Discernment needs a valid target tile." };
     }
     if (axis !== "row" && axis !== "col") {
-      return { success: false, reason: "Pick row or column for Truth Radar." };
+      return { success: false, reason: "Pick row or column for Light of Discernment." };
     }
 
     const line = getLineIndices(state.board.gridSize, targetIndex, axis);
@@ -575,7 +575,7 @@ export function applyPowerUp(
       anchor < 0 ||
       anchor >= total
     ) {
-      return { success: false, reason: "Lie Pin needs a focal tile." };
+      return { success: false, reason: "Exposing the Dark needs a focal tile." };
     }
 
     const hiddenLies: number[] = [];
@@ -603,7 +603,7 @@ export function applyPowerUp(
       anchorIndex < 0 ||
       anchorIndex >= total
     ) {
-      return { success: false, reason: "Verse Compass needs an anchor tile." };
+      return { success: false, reason: "Living Word needs an anchor tile." };
     }
 
     const hiddenVerses = state.board.verseIndices
@@ -646,7 +646,7 @@ export function applyPowerUp(
       anchor < 0 ||
       anchor >= total
     ) {
-      return { success: false, reason: "Gentle Step needs a focal tile." };
+      return { success: false, reason: "Steadfast Path needs a focal tile." };
     }
 
     const hiddenSafe: number[] = [];
@@ -656,7 +656,7 @@ export function applyPowerUp(
       }
     }
     if (hiddenSafe.length === 0) {
-      return { success: false, reason: "No safe tiles were left for Gentle Step." };
+      return { success: false, reason: "No safe tiles were left for Steadfast Path." };
     }
 
     const pick = pickNearestByManhattan(hiddenSafe, anchor, state.board.gridSize);

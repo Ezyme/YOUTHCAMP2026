@@ -15,10 +15,23 @@ import {
   Footprints,
   Trophy,
   Bomb,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
 } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   generateBoard,
   seededShuffle,
@@ -81,18 +94,18 @@ type PersistedState = {
 const LIVE_PLAY_MS = 12_000;
 
 const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield }> = {
-  extra_heart: { label: "Extra Heart", icon: Heart },
-  reveal: { label: "Reveal", icon: Sparkles },
-  scout: { label: "Scout", icon: Search },
-  shield: { label: "Shield", icon: Shield },
-  safe_opening: { label: "Safe opening", icon: Expand },
-  truth_radar: { label: "Truth Radar", icon: Crosshair },
-  lie_pin: { label: "Lie Pin", icon: Flag },
-  verse_compass: { label: "Verse Compass", icon: Compass },
-  gentle_step: { label: "Gentle Step", icon: Footprints },
+  extra_heart: { label: "Abundant Grace", icon: Heart },
+  reveal: { label: "Glimmer of Hope", icon: Sparkles },
+  scout: { label: "Prophetic Vision", icon: Search },
+  shield: { label: "Armor of Truth", icon: Shield },
+  safe_opening: { label: "Divine Blueprint", icon: Expand },
+  truth_radar: { label: "Light of Discernment", icon: Crosshair },
+  lie_pin: { label: "Exposing the Dark", icon: Flag },
+  verse_compass: { label: "Living Word", icon: Compass },
+  gentle_step: { label: "Steadfast Path", icon: Footprints },
 };
 
-/** Scout peek kind as shown in UI / toasts (tile is still hidden). */
+/** Prophetic Vision peek kind as shown in UI / toasts (tile is still hidden). */
 function formatScoutPeekKind(kind: string): string {
   switch (kind) {
     case "lie":
@@ -220,6 +233,8 @@ function normalizeLoadedState(data: PersistedState): {
   return { verseKeys: keys, verseFragments: frags, assembly, restored };
 }
 
+const FRESH_VERSE_DURATION_MS = 2000;
+
 function TruthRadarChooser({
   anchor,
   gridContainer,
@@ -319,7 +334,7 @@ function TruthRadarChooser({
     <div
       ref={cardRef}
       role="dialog"
-      aria-label="Truth Radar axis"
+      aria-label="Light of Discernment axis"
       className="absolute z-30 flex items-center gap-1 rounded-md border border-primary/40 bg-background/95 px-1.5 py-1 shadow-md backdrop-blur"
       style={{ top: pos.top, left: pos.left }}
     >
@@ -419,6 +434,9 @@ export function UnmaskedBoard({
   }, [board?.tiles.length]);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
 
+  const [freshVerseTiles, setFreshVerseTiles] = useState<Set<number>>(() => new Set());
+  const verseFadeTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
   /**
    * Serialize background action POSTs so the server always sees clicks in the
    * same order the user made them — even if five reveals fire inside 100ms.
@@ -464,13 +482,13 @@ export function UnmaskedBoard({
     setTipPowerUp(null);
   }, []);
 
-  const startPowerUpTip = useCallback((type: PowerUpType) => {
+  const startPowerUpTip = useCallback((type: PowerUpType, delay = 450) => {
     if (tipTimer.current) clearTimeout(tipTimer.current);
     tipTimer.current = setTimeout(() => {
       setTipPowerUp(type);
       // Auto-dismiss the tooltip after a moment so it never sticks around.
       tipTimer.current = setTimeout(() => setTipPowerUp(null), 3000);
-    }, 450);
+    }, delay);
   }, []);
 
   const flashTiles = useCallback(
@@ -540,6 +558,14 @@ export function UnmaskedBoard({
     const id = window.setInterval(() => setReadOnlyTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
   }, [readOnly, passagesComplete, status]);
+
+  useEffect(() => {
+    const timers = verseFadeTimers.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -672,6 +698,9 @@ export function UnmaskedBoard({
         return;
       }
       clearLocalMirror(sessionId, teamId);
+      for (const t of verseFadeTimers.current.values()) clearTimeout(t);
+      verseFadeTimers.current.clear();
+      setFreshVerseTiles(new Set());
       setReloadKey((k) => k + 1);
     } finally {
       setRetrying(false);
@@ -825,6 +854,37 @@ export function UnmaskedBoard({
     [enqueueServerAction, applyServerState],
   );
 
+  const celebrateVerseReveals = useCallback(
+    (indices: Iterable<number>) => {
+      if (!board) return;
+      const toAdd: number[] = [];
+      for (const i of indices) {
+        if (board.tiles[i]?.kind !== "verse") continue;
+        if (freshVerseTiles.has(i)) continue;
+        toAdd.push(i);
+      }
+      if (toAdd.length === 0) return;
+      setFreshVerseTiles((prev) => {
+        const next = new Set(prev);
+        for (const i of toAdd) next.add(i);
+        return next;
+      });
+      for (const i of toAdd) {
+        const timer = setTimeout(() => {
+          setFreshVerseTiles((prev) => {
+            if (!prev.has(i)) return prev;
+            const next = new Set(prev);
+            next.delete(i);
+            return next;
+          });
+          verseFadeTimers.current.delete(i);
+        }, FRESH_VERSE_DURATION_MS);
+        verseFadeTimers.current.set(i, timer);
+      }
+    },
+    [board, freshVerseTiles],
+  );
+
   /**
    * Compares the last-known optimistic state against the server snapshot and
    * adopts server state if they diverge. Skipped while more POSTs are in
@@ -842,13 +902,19 @@ export function UnmaskedBoard({
         latest.shielded !== s.shielded ||
         latest.status !== s.status;
       if (!diverged) return;
+      const prevRevealed = latest.revealed;
       applyServerState(s);
+      const newlyRevealed: number[] = [];
+      for (const i of s.revealed) {
+        if (!prevRevealed.has(i)) newlyRevealed.push(i);
+      }
+      if (newlyRevealed.length > 0) celebrateVerseReveals(newlyRevealed);
       showWarning("Synced with server", {
         description: "Reapplied authoritative game state.",
         duration: 3200,
       });
     },
-    [applyServerState],
+    [applyServerState, celebrateVerseReveals],
   );
 
   /**
@@ -927,13 +993,16 @@ export function UnmaskedBoard({
         return result;
       }
       commitOptimistic(next);
+      if ("floodRevealed" in result) {
+        celebrateVerseReveals(result.floodRevealed);
+      }
       void enqueueServerAction({ action: "reveal", index }).then((data) => {
         if (!data) return;
         maybeReconcile(data.state);
       });
       return result;
     },
-    [board, commitOptimistic, enqueueServerAction, maybeReconcile],
+    [board, commitOptimistic, enqueueServerAction, maybeReconcile, celebrateVerseReveals],
   );
 
   /**
@@ -1068,7 +1137,7 @@ export function UnmaskedBoard({
 
     if (activePowerUp === "truth_radar") {
       setPendingAxisTile(index);
-      showPowerUpMessage("Truth Radar locked on. Choose Row or Column.");
+      showPowerUpMessage("Light of Discernment locked on. Choose Row or Column.");
       return;
     }
 
@@ -1077,16 +1146,17 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Verse Compass fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Living Word fizzled.", 4200);
         return;
       }
       const hits = Array.isArray(result.revealedIndices) ? result.revealedIndices : [];
       if (hits.length > 0) {
         flashTiles(hits, "verse_compass", 2200);
+        celebrateVerseReveals(hits);
         showPowerUpMessage(
           hits.length === 1 ?
-            "Verse Compass revealed 1 nearby fragment."
-          : "Verse Compass revealed 2 nearby fragments.",
+            "Living Word revealed 1 nearby fragment."
+          : "Living Word revealed 2 nearby fragments.",
           2800,
         );
       }
@@ -1098,7 +1168,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Lie Pin fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Exposing the Dark fizzled.", 4200);
         return;
       }
       if (typeof result.flaggedIndex === "number") {
@@ -1113,11 +1183,12 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Gentle Step fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Steadfast Path fizzled.", 4200);
         return;
       }
       if (result.revealedIndex != null) {
         flashTiles([result.revealedIndex], "gentle_step", 1800);
+        celebrateVerseReveals([result.revealedIndex]);
       }
       showPowerUpMessage("Nearest safe square opened from your focal tile.", 2800);
       return;
@@ -1128,7 +1199,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Scout fizzled.", 4000);
+        showPowerUpMessage(result.reason ?? "Prophetic Vision fizzled.", 4000);
         return;
       }
       if (result.peekedIndex != null) {
@@ -1168,9 +1239,9 @@ export function UnmaskedBoard({
     if (result.type === "lie") {
       const quoted = `“${result.text}”`;
       if (result.shieldUsed) {
-        showSuccess(`Shield blocked: ${quoted}`, {
+        showSuccess(`Armor of Truth blocked: ${quoted}`, {
           duration: 4000,
-          description: "Your shield protected you — no heart lost!",
+          description: "Your Armor of Truth protected you — no heart lost!",
         });
       } else {
         showWarning(`Lie revealed: ${quoted}`, {
@@ -1184,6 +1255,7 @@ export function UnmaskedBoard({
 
     if ("floodRevealed" in result && Array.isArray(result.floodRevealed) && result.floodRevealed.length > 0) {
       flashTiles(result.floodRevealed, "reveal", 1600);
+      celebrateVerseReveals(result.floodRevealed);
     }
   }
 
@@ -1239,13 +1311,13 @@ export function UnmaskedBoard({
       setActivePowerUp((prev) => (prev === type ? null : type));
       setPendingAxisTile(null);
       if (type === "truth_radar") {
-        showPowerUpMessage("Truth Radar armed — tap a tile first, then choose Row or Column.");
+        showPowerUpMessage("Light of Discernment armed — tap a tile first, then choose Row or Column.");
       } else if (type === "verse_compass") {
-        showPowerUpMessage("Verse Compass armed — tap an anchor tile.");
+        showPowerUpMessage("Living Word armed — tap an anchor tile.");
       } else if (type === "lie_pin") {
-        showPowerUpMessage("Lie Pin armed — tap a focal tile (nearest hidden lie is pinned).");
+        showPowerUpMessage("Exposing the Dark armed — tap a focal tile (nearest hidden lie is pinned).");
       } else if (type === "gentle_step") {
-        showPowerUpMessage("Gentle Step armed — tap a focal tile (nearest safe opens).");
+        showPowerUpMessage("Steadfast Path armed — tap a focal tile (nearest safe opens).");
       }
       return;
     }
@@ -1260,17 +1332,19 @@ export function UnmaskedBoard({
       return;
     }
     if (type === "shield") {
-      showPowerUpMessage("Shield up — your next lie is blocked.", 2600);
+      showPowerUpMessage("Armor of Truth up — your next lie is blocked.", 2600);
       return;
     }
     if (type === "reveal" && result.revealedIndex != null) {
       flashTiles([result.revealedIndex], "reveal", 1800);
+      celebrateVerseReveals([result.revealedIndex]);
       showPowerUpMessage("A safe area has been revealed!", 2400);
       return;
     }
     if (type === "safe_opening" && typeof result.openingSize === "number") {
       flashTiles(result.revealedIndex != null ? [result.revealedIndex] : [], "safe_opening", 2200);
-      showPowerUpMessage(`Safe opening cleared ${result.openingSize} tiles!`, 3400);
+      if (result.revealedIndex != null) celebrateVerseReveals([result.revealedIndex]);
+      showPowerUpMessage(`Divine Blueprint cleared ${result.openingSize} tiles!`, 3400);
       return;
     }
   }
@@ -1282,14 +1356,15 @@ export function UnmaskedBoard({
     resetPowerUpIntent();
     if (!result) return;
     if (result.success === false) {
-      showPowerUpMessage(result.reason ?? "Truth Radar fizzled.", 4200);
+      showPowerUpMessage(result.reason ?? "Light of Discernment fizzled.", 4200);
       return;
     }
     const revealedIndices = Array.isArray(result.revealedIndices) ? result.revealedIndices : [];
     if (revealedIndices.length > 0) {
       flashTiles([origin, ...revealedIndices], "truth_radar", 2400);
+      celebrateVerseReveals(revealedIndices);
       showSuccess(
-        `Truth Radar revealed ${revealedIndices.length} truth${revealedIndices.length === 1 ? "" : "s"} on that ${axis}.`,
+        `Light of Discernment revealed ${revealedIndices.length} truth${revealedIndices.length === 1 ? "" : "s"} on that ${axis}.`,
       );
     } else {
       showInfo(`No hidden truths were left on that ${axis}.`);
@@ -1353,13 +1428,34 @@ export function UnmaskedBoard({
     schedulePersistAssembly(next);
   }
 
-  function moveWithinAssembly(from: number, to: number) {
-    const next = [...verseAssemblyIndices];
-    const [item] = next.splice(from, 1);
-    next.splice(to, 0, item);
-    setVerseAssemblyIndices(next);
-    schedulePersistAssembly(next);
-  }
+  const moveWithinAssembly = useCallback(
+    (from: number, to: number) => {
+      const next = [...verseAssemblyIndices];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      setVerseAssemblyIndices(next);
+      schedulePersistAssembly(next);
+    },
+    [verseAssemblyIndices, schedulePersistAssembly],
+  );
+
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleAssemblyDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const ids = assemblyFragments.map((f, i) => `${f.index}-${i}`);
+      const from = ids.indexOf(String(active.id));
+      const to = ids.indexOf(String(over.id));
+      if (from < 0 || to < 0) return;
+      moveWithinAssembly(from, to);
+    },
+    [assemblyFragments, moveWithinAssembly],
+  );
 
   const totalSafe = board ? board.gridSize * board.gridSize - board.totalLies : 0;
   const revealedSafe = board
@@ -1433,6 +1529,49 @@ export function UnmaskedBoard({
   }
 
   if (!board) return null;
+
+  function SortableFragmentChip({
+    id,
+    frag,
+    palette,
+    disabled,
+    onTapReturn,
+  }: {
+    id: string;
+    frag: VerseFragRow;
+    palette: (typeof VERSE_PALETTE)[number];
+    disabled: boolean;
+    onTapReturn: () => void;
+  }) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+      id,
+      disabled,
+    });
+
+    const style: React.CSSProperties = {
+      transform: CSS.Transform.toString(transform),
+      transition,
+      opacity: isDragging ? 0.85 : 1,
+    };
+
+    return (
+      <button
+        ref={setNodeRef}
+        style={style}
+        type="button"
+        onClick={onTapReturn}
+        disabled={disabled}
+        className={`max-w-full rounded-xl border px-2.5 py-1.5 text-left text-[0.7rem] font-medium leading-snug shadow-sm transition ${palette.ring} ${palette.bg} ${palette.text} ${
+          disabled ? "cursor-not-allowed opacity-60" : "cursor-grab active:cursor-grabbing"
+        } ${isDragging ? "ring-2 ring-primary/40 shadow-md scale-[1.02]" : ""}`}
+        {...attributes}
+        {...listeners}
+        title="Drag to reorder · tap to return to stack"
+      >
+        {frag.text}
+      </button>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -1567,17 +1706,17 @@ export function UnmaskedBoard({
             <>
               <span className="text-xs text-primary">
                 {activePowerUp === "scout" ?
-                  "Scout armed — tap a hidden tile to peek."
+                  "Prophetic Vision armed — tap a hidden tile to peek."
                 : activePowerUp === "truth_radar" && pendingAxisTile == null ?
-                  "Truth Radar armed — tap a tile first."
+                  "Light of Discernment armed — tap a tile first."
                 : activePowerUp === "truth_radar" ?
-                  "Truth Radar locked — now choose Row or Column."
+                  "Light of Discernment locked — now choose Row or Column."
                 : activePowerUp === "verse_compass" ?
-                  "Verse Compass armed — tap an anchor tile."
+                  "Living Word armed — tap an anchor tile."
                 : activePowerUp === "lie_pin" ?
-                  "Lie Pin armed — tap your focal tile."
+                  "Exposing the Dark armed — tap your focal tile."
                 : activePowerUp === "gentle_step" ?
-                  "Gentle Step armed — tap your focal tile."
+                  "Steadfast Path armed — tap your focal tile."
                 : `Tap a tile to use ${POWER_UP_LABELS[activePowerUp]?.label}`}
               </span>
               <button
@@ -1606,7 +1745,7 @@ export function UnmaskedBoard({
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-foreground">Power-ups</p>
               {!readOnly ? (
-                <span className="text-[11px] text-muted-foreground">Long-press for tip</span>
+                <span className="text-[11px] text-muted-foreground">Hover or hold for tip</span>
               ) : (
                 <span className="text-[11px] text-muted-foreground">Inventory</span>
               )}
@@ -1631,10 +1770,14 @@ export function UnmaskedBoard({
                       <button
                         type="button"
                         onClick={() => isReady && void handleUsePowerUp(type)}
+                        onMouseEnter={() => startPowerUpTip(type, 180)}
+                        onMouseLeave={cancelPowerUpTip}
                         onPointerDown={() => startPowerUpTip(type)}
                         onPointerUp={cancelPowerUpTip}
                         onPointerLeave={cancelPowerUpTip}
                         onPointerCancel={cancelPowerUpTip}
+                        onFocus={() => startPowerUpTip(type, 180)}
+                        onBlur={cancelPowerUpTip}
                         disabled={!isReady}
                         className={`relative flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-[11px] leading-tight transition ${
                           isActive ?
@@ -1769,24 +1912,66 @@ export function UnmaskedBoard({
               );
             }
             if (isVerse) {
-              const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-sm border-2 border-amber-200/80 ${
-                isHighlighted && highlightMode === "verse_compass" ?
-                  "ring-2 ring-violet-400 ring-offset-1 ring-offset-emerald-50"
-                : ""
-              } ${needsFocalTileFromGrid ? `${focalRevealHover} hover:ring-2` : ""}`;
-              const verseClue =
-                tile.adjacentLies > 0 ? (
-                  <span
-                    className={`relative z-10 text-[0.75rem] font-bold tabular-nums drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] sm:text-sm ${numberColor(tile.adjacentLies)}`}
+              const isFresh = freshVerseTiles.has(i);
+
+              if (isFresh) {
+                const cls = `verse-magic-tile relative flex aspect-square min-h-0 items-center justify-center overflow-hidden rounded-sm border-2 border-amber-200/80 transition-[background-color,border-color,color] duration-700 ease-out ${
+                  isHighlighted && highlightMode === "verse_compass" ?
+                    "ring-2 ring-violet-400 ring-offset-1 ring-offset-emerald-50"
+                  : ""
+                } ${needsFocalTileFromGrid ? `${focalRevealHover} hover:ring-2` : ""}`;
+                const verseClue =
+                  tile.adjacentLies > 0 ? (
+                    <span
+                      className={`relative z-10 text-[0.75rem] font-bold tabular-nums drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] sm:text-sm ${numberColor(tile.adjacentLies)}`}
+                    >
+                      {tile.adjacentLies}
+                    </span>
+                  ) : (
+                    <Sparkles
+                      className="relative z-10 size-4 text-amber-50 opacity-95 drop-shadow-[0_0_8px_rgba(250,232,255,0.95)] sm:size-[1.15rem]"
+                      strokeWidth={2}
+                    />
+                  );
+                return needsFocalTileFromGrid ? (
+                  <button
+                    key={i}
+                    ref={tileRefSetters[i]}
+                    type="button"
+                    disabled={status !== "playing"}
+                    onClick={() => void handleTileClick(i)}
+                    className={cls}
+                    title="Passage tile — number shows adjacent lies"
                   >
-                    {tile.adjacentLies}
-                  </span>
+                    <Sparkles
+                      className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
+                      aria-hidden
+                    />
+                    {verseClue}
+                  </button>
                 ) : (
-                  <Sparkles
-                    className="relative z-10 size-4 text-amber-50 opacity-95 drop-shadow-[0_0_8px_rgba(250,232,255,0.95)] sm:size-[1.15rem]"
-                    strokeWidth={2}
-                  />
+                  <div
+                    key={i}
+                    ref={tileRefSetters[i]}
+                    className={cls}
+                    title="Passage tile — number shows adjacent lies"
+                  >
+                    <Sparkles
+                      className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
+                      aria-hidden
+                    />
+                    {verseClue}
+                  </div>
                 );
+              }
+
+              const cls = `flex aspect-square min-h-0 items-center justify-center rounded-sm border border-transparent bg-white transition-[background-color,border-color,color] duration-700 ease-out ${
+                isHighlighted && (highlightMode === "reveal" || highlightMode === "safe_opening" || highlightMode === "gentle_step") ?
+                  "animate-pulse border border-emerald-400 bg-emerald-100"
+                : isHighlighted && highlightMode === "verse_compass" ?
+                  "ring-2 ring-violet-400 ring-offset-1 ring-offset-white"
+                : ""
+              } ${needsFocalTileFromGrid ? focalRevealHover : ""}`;
               return needsFocalTileFromGrid ? (
                 <button
                   key={i}
@@ -1797,11 +1982,13 @@ export function UnmaskedBoard({
                   className={cls}
                   title="Passage tile — number shows adjacent lies"
                 >
-                  <Sparkles
-                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
-                    aria-hidden
-                  />
-                  {verseClue}
+                  {tile.adjacentLies > 0 ? (
+                    <span
+                      className={`text-[0.65rem] font-bold sm:text-xs ${numberColor(tile.adjacentLies)}`}
+                    >
+                      {tile.adjacentLies}
+                    </span>
+                  ) : null}
                 </button>
               ) : (
                 <div
@@ -1810,11 +1997,13 @@ export function UnmaskedBoard({
                   className={cls}
                   title="Passage tile — number shows adjacent lies"
                 >
-                  <Sparkles
-                    className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
-                    aria-hidden
-                  />
-                  {verseClue}
+                  {tile.adjacentLies > 0 ? (
+                    <span
+                      className={`text-[0.65rem] font-bold sm:text-xs ${numberColor(tile.adjacentLies)}`}
+                    >
+                      {tile.adjacentLies}
+                    </span>
+                  ) : null}
                 </div>
               );
             }
@@ -2077,15 +2266,9 @@ export function UnmaskedBoard({
                 <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
                   Builder row
                 </p>
-                {assemblyFragments.length > 1 ? (
-                  <span className="text-[10px] text-amber-700/90 dark:text-amber-400/90">
-                    Use ↑ ↓ to reorder · tap a line to return it to the stack
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-amber-700/90 dark:text-amber-400/90">
-                    Tap a line to return it to the stack
-                  </span>
-                )}
+                <span className="text-[10px] text-amber-700/90 dark:text-amber-400/90">
+                  Drag to reorder · tap a line to return it to the stack
+                </span>
               </div>
               <div className="mt-2 min-h-[2.75rem] rounded-xl border border-amber-200/70 bg-white/55 p-2.5 dark:border-amber-800/55 dark:bg-amber-950/35">
                 {assemblyFragments.length === 0 ? (
@@ -2093,56 +2276,32 @@ export function UnmaskedBoard({
                     Add phrases from the stack in the order you think is right.
                   </span>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
-                    {assemblyFragments.map((frag, i) => {
-                      const palette = VERSE_PALETTE[verseColorIndex(frag.verseKey, usedVerseKeys)];
-                      const last = i === assemblyFragments.length - 1;
-                      return (
-                        <div key={`${frag.index}-${i}`} className="flex items-center gap-1.5">
-                          {i > 0 ? (
-                            <ChevronRight
-                              className="size-4 shrink-0 text-amber-400/75 dark:text-amber-500/45"
-                              aria-hidden
+                  <DndContext
+                    sensors={dndSensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleAssemblyDragEnd}
+                  >
+                    <SortableContext
+                      items={assemblyFragments.map((f, i) => `${f.index}-${i}`)}
+                      strategy={horizontalListSortingStrategy}
+                    >
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
+                        {assemblyFragments.map((frag, i) => {
+                          const palette = VERSE_PALETTE[verseColorIndex(frag.verseKey, usedVerseKeys)];
+                          return (
+                            <SortableFragmentChip
+                              key={`${frag.index}-${i}`}
+                              id={`${frag.index}-${i}`}
+                              frag={frag}
+                              palette={palette}
+                              disabled={!canAssembleVerses}
+                              onTapReturn={() => removeFromAssembly(i)}
                             />
-                          ) : null}
-                          <div
-                            className={`flex max-w-full min-w-0 overflow-hidden rounded-xl border shadow-sm ${palette.ring} bg-white/90 dark:bg-amber-950/50`}
-                          >
-                            <div className="flex shrink-0 flex-col self-stretch border-r border-amber-200/70 dark:border-amber-800/60">
-                              <button
-                                type="button"
-                                disabled={i === 0 || !canAssembleVerses}
-                                onClick={() => moveWithinAssembly(i, i - 1)}
-                                className="flex min-h-[1.5rem] flex-1 items-center justify-center px-1 text-amber-700 transition hover:bg-amber-100/90 disabled:cursor-not-allowed disabled:opacity-25 dark:text-amber-300 dark:hover:bg-amber-900/50"
-                                title="Earlier in sentence"
-                                aria-label="Move fragment earlier in sentence"
-                              >
-                                <ChevronUp className="size-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={last || !canAssembleVerses}
-                                onClick={() => moveWithinAssembly(i, i + 1)}
-                                className="flex min-h-[1.5rem] flex-1 items-center justify-center px-1 text-amber-700 transition hover:bg-amber-100/90 disabled:cursor-not-allowed disabled:opacity-25 dark:text-amber-300 dark:hover:bg-amber-900/50"
-                                title="Later in sentence"
-                                aria-label="Move fragment later in sentence"
-                              >
-                                <ChevronDown className="size-3.5" />
-                              </button>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removeFromAssembly(i)}
-                              className={`min-w-0 flex-1 px-2.5 py-1.5 text-left text-[0.7rem] font-medium leading-snug ${palette.bg} ${palette.text}`}
-                              title="Back to stack"
-                            >
-                              {frag.text}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                          );
+                        })}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
                 )}
               </div>
             </div>

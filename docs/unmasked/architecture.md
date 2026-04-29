@@ -36,19 +36,19 @@ If valid → the verse is added to `versesRestored`, `verseScore` increments by 
 
 ## Power-up types and lifecycle
 
-Nine types, all in `PowerUpType` ([models.ts:78](../../lib/db/models.ts#L78)):
+Nine types, all in `PowerUpType` ([models.ts:78](../../lib/db/models.ts#L78)). Player-facing display names (themed) are defined in [`lib/ui/powerup-copy.ts`](../../lib/ui/powerup-copy.ts) (`POWER_UP_NAME`):
 
-| Type | Auto-apply? | Charges/code | Behavior |
-|---|---|---|---|
-| `extra_heart` | yes | 1 | +1 max heart, +1 current heart |
-| `shield` | yes | 1 | Blocks the next lie |
-| `safe_opening` | no | 1 | Reveals the largest 0-cascade tile |
-| `reveal` | no | 5 | Random safe tile flood-reveal |
-| `scout` | no (armed) | 3 | Tap a hidden tile to peek lie/truth |
-| `truth_radar` | no (armed) | 1 | Tap target + axis → reveal every truth on that row/column |
-| `lie_pin` | no (armed) | 2 | Tap anchor → flag the nearest hidden lie |
-| `verse_compass` | no (armed) | 2 | Tap anchor → reveal 2 nearest hidden verse fragments |
-| `gentle_step` | no (armed) | 2 | Tap anchor → reveal only the nearest safe tile |
+| Type | Display name | Auto-apply? | Charges/code | Behavior |
+|---|---|---|---|---|
+| `extra_heart` | Abundant Grace | yes | 1 | +1 max heart, +1 current heart |
+| `shield` | Armor of Truth | yes | 1 | Blocks the next lie |
+| `safe_opening` | Divine Blueprint | no | 1 | Reveals the largest 0-cascade tile |
+| `reveal` | Glimmer of Hope | no | 5 | Random safe tile flood-reveal |
+| `scout` | Prophetic Vision | no (armed) | 3 | Tap a hidden tile to peek lie/truth |
+| `truth_radar` | Light of Discernment | no (armed) | 1 | Tap target + axis → reveal every truth on that row/column |
+| `lie_pin` | Exposing the Dark | no (armed) | 2 | Tap anchor → flag the nearest hidden lie |
+| `verse_compass` | Living Word | no (armed) | 2 | Tap anchor → reveal 2 nearest hidden verse fragments |
+| `gentle_step` | Steadfast Path | no (armed) | 2 | Tap anchor → reveal only the nearest safe tile |
 
 "Auto-apply" means the redemption flow ([`redemption-grant.ts`](../../lib/games/unmasked/redemption-grant.ts)) immediately mutates state (hearts up, shield on) and marks the inventory entry `used: true`. "Armed" means the entry sits in inventory until the player explicitly uses it.
 

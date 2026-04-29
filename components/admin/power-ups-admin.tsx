@@ -19,29 +19,29 @@ type CodeRow = {
 type Team = { _id: string; name: string };
 
 const POWER_UP_OPTIONS: { value: PowerUpType; label: string }[] = [
-  { value: "extra_heart", label: "Extra Heart (+1 life)" },
-  { value: "reveal", label: "Reveal (show a safe tile)" },
-  { value: "scout", label: "Scout (peek at a tile)" },
-  { value: "shield", label: "Shield (block next lie)" },
+  { value: "extra_heart", label: "Abundant Grace (+1 life)" },
+  { value: "reveal", label: "Glimmer of Hope (show a safe tile)" },
+  { value: "scout", label: "Prophetic Vision (peek at a tile)" },
+  { value: "shield", label: "Armor of Truth (block next lie)" },
   {
     value: "safe_opening",
-    label: "Safe opening (largest clear patch — best first “click”)",
+    label: "Divine Blueprint (largest clear patch — best first “click”)",
   },
   {
     value: "truth_radar",
-    label: "Truth Radar (reveal 1 nearest lie on row or column)",
+    label: "Light of Discernment (reveal 1 nearest lie on row or column)",
   },
   {
     value: "lie_pin",
-    label: "Lie Pin (flag 1 hidden lie)",
+    label: "Exposing the Dark (flag 1 hidden lie)",
   },
   {
     value: "verse_compass",
-    label: "Verse Compass (reveal 2 nearest verse fragments)",
+    label: "Living Word (reveal 2 nearest verse fragments)",
   },
   {
     value: "gentle_step",
-    label: "Gentle Step (reveal 1 safe square, no spread)",
+    label: "Steadfast Path (reveal 1 safe square, no spread)",
   },
 ];
 
