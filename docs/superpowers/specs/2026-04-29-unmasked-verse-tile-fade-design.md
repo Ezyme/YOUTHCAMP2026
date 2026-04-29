@@ -40,8 +40,8 @@ const verseFadeTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new M
 #### Population rules
 
 1. **Initial mount** — `freshVerseTiles` is empty. Tiles already revealed in the local mirror or server response render in matured (normal) styling. No celebration on reload.
-2. **Optimistic reveal** — `applyRevealLocal` returns `{ result, next }` where `result.floodRevealed: number[]` lists every index newly revealed by this action (single tap or full flood-fill cascade). Filter that array for indices where `board.tiles[i].kind === "verse"`; for each, add to `freshVerseTiles` and schedule a 2 s timer that removes it.
-3. **Server reconcile** — when the server response replaces local state, diff the new `revealed` Set against the previous one. For every index in `next.revealed - prev.revealed` whose `tile.kind === "verse"` AND not already in `freshVerseTiles`, add and schedule a timer. (This handles power-ups like Truth Radar that reveal verse tiles server-side; for those the server returns `revealedIndices` directly, but the diff approach is more general and covers any reconcile path.)
+2. **Optimistic reveal** — `applyRevealLocal` returns a `next` slice with possibly multiple indices flipped from hidden to revealed (single tap, or flood fill clearing safe-opening). For each newly revealed index whose `tile.kind === "verse"`, add to `freshVerseTiles` and schedule a 2 s timer that removes it.
+3. **Server reconcile** — when the server response replaces the local state, diff the new revealed-set against the previous one. For every newly revealed index that is a verse tile AND is NOT already in `freshVerseTiles`, add it and schedule a timer. (This handles the case where a power-up like Truth Radar revealed verse tiles server-side.)
 4. **Retry / new board** — clear `freshVerseTiles` and cancel all pending timers.
 5. **Component unmount** — cancel all pending timers.
 
@@ -91,7 +91,7 @@ useEffect(() => {
   };
 }, []);
 ```
-
+r
 #### Wiring
 
 Find the existing reveal hook in the component (the function that calls `applyRevealLocal` and updates state) and immediately after applying optimistic state, call `celebrateVerseReveals(newlyRevealedVerseIndices)`.
