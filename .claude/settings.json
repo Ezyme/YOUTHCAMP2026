@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node .claude/hooks/no-auto-commit.mjs)",
+      "Bash(node .claude/hooks/doc-sync.mjs)",
+      "Bash(node .claude/hooks/touched-files-track.mjs)",
+      "Bash(node --input-type=module)",
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run dev)",
+      "Bash(npm run build)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status *)",
+      "Bash(git show *)",
+      "Bash(git blame *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/touched-files-track.mjs"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/no-auto-commit.mjs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/doc-sync.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
