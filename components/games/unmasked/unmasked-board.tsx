@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Heart,
   Flag,
@@ -220,6 +220,128 @@ function normalizeLoadedState(data: PersistedState): {
   return { verseKeys: keys, verseFragments: frags, assembly, restored };
 }
 
+function TruthRadarChooser({
+  anchor,
+  gridContainer,
+  row,
+  col,
+  gridSize,
+  onChoose,
+  onCancel,
+}: {
+  anchor: HTMLElement | null;
+  gridContainer: HTMLElement | null;
+  row: number;
+  col: number;
+  gridSize: number;
+  onChoose: (axis: "row" | "col") => void;
+  onCancel: () => void;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number; placement: "above" | "below" } | null>(
+    null,
+  );
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  const recompute = useCallback(() => {
+    if (!anchor || !gridContainer) {
+      setPos(null);
+      return;
+    }
+    const a = anchor.getBoundingClientRect();
+    const g = gridContainer.getBoundingClientRect();
+    const placement: "above" | "below" = row === 0 ? "below" : "above";
+    const cardWidth = cardRef.current?.offsetWidth ?? 140;
+    const cardHeight = cardRef.current?.offsetHeight ?? 36;
+    const gap = 8;
+
+    const tileLeft = a.left - g.left;
+    const tileTop = a.top - g.top;
+    const tileWidth = a.width;
+    const tileHeight = a.height;
+
+    let left: number;
+    if (col === 0) left = tileLeft + tileWidth + gap;
+    else if (col === gridSize - 1) left = tileLeft - cardWidth - gap;
+    else left = tileLeft + tileWidth / 2 - cardWidth / 2;
+
+    const top =
+      placement === "above" ? tileTop - cardHeight - gap : tileTop + tileHeight + gap;
+
+    setPos({ top, left, placement });
+  }, [anchor, gridContainer, row, col, gridSize]);
+
+  useLayoutEffect(() => {
+    // Measure-then-position pattern: setState here is intentional and synchronous
+    // before paint to avoid a flash of an unpositioned popover.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    recompute();
+    // First pass uses the 140/36 fallback because cardRef has not mounted yet.
+    // Re-measure on the next frame so the popover centers on the true card width.
+    const raf = requestAnimationFrame(() => recompute());
+    return () => cancelAnimationFrame(raf);
+  }, [recompute]);
+
+  useEffect(() => {
+    if (!anchor || !gridContainer) return;
+    const onResize = () => recompute();
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onResize, true);
+    const ro = new ResizeObserver(onResize);
+    ro.observe(gridContainer);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onResize, true);
+      ro.disconnect();
+    };
+  }, [anchor, gridContainer, recompute]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as Node | null;
+      if (cardRef.current && target && cardRef.current.contains(target)) return;
+      if (gridContainer && target && gridContainer.contains(target)) return;
+      onCancel();
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [gridContainer, onCancel]);
+
+  if (!pos) return null;
+
+  return (
+    <div
+      ref={cardRef}
+      role="dialog"
+      aria-label="Truth Radar axis"
+      className="absolute z-30 flex items-center gap-1 rounded-md border border-primary/40 bg-background/95 px-1.5 py-1 shadow-md backdrop-blur"
+      style={{ top: pos.top, left: pos.left }}
+    >
+      <button
+        type="button"
+        autoFocus
+        onClick={() => onChoose("row")}
+        className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/15 focus:outline-none focus:ring-2 focus:ring-primary/40"
+      >
+        Row
+      </button>
+      <button
+        type="button"
+        onClick={() => onChoose("col")}
+        className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/15 focus:outline-none focus:ring-2 focus:ring-primary/40"
+      >
+        Column
+      </button>
+    </div>
+  );
+}
+
 export function UnmaskedBoard({
   sessionId,
   teamId,
@@ -283,6 +405,19 @@ export function UnmaskedBoard({
 
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tileRefs = useRef<Map<number, HTMLElement | null>>(new Map());
+  const tileRefSetters = useMemo(() => {
+    const count = board?.tiles.length ?? 0;
+    const setters: Array<(el: HTMLElement | null) => void> = [];
+    for (let i = 0; i < count; i++) {
+      setters.push((el) => {
+        if (el) tileRefs.current.set(i, el);
+        else tileRefs.current.delete(i);
+      });
+    }
+    return setters;
+  }, [board?.tiles.length]);
+  const gridContainerRef = useRef<HTMLDivElement | null>(null);
 
   /**
    * Serialize background action POSTs so the server always sees clicks in the
@@ -1454,24 +1589,6 @@ export function UnmaskedBoard({
               </button>
             </>
           ) : null}
-          {activePowerUp === "truth_radar" && pendingAxisTile != null ? (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => void handleTruthRadarAxis("row")}
-                className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/15"
-              >
-                Row
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleTruthRadarAxis("col")}
-                className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/15"
-              >
-                Column
-              </button>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
@@ -1569,18 +1686,22 @@ export function UnmaskedBoard({
         </aside>
 
         <div className="order-1 min-w-0 flex-1 lg:order-2">
-          {!readOnly && activePowerUp ? (
-            <div
-              role="status"
-              className="mx-auto mb-2 max-w-full rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-center text-[11px] font-medium text-primary"
-            >
-              {activePowerUp === "truth_radar" && pendingAxisTile != null
-                ? "Now choose Row or Column."
-                : POWER_UP_ARMED_BANNER[activePowerUp]}
-            </div>
-          ) : null}
           <div
-            className={`w-full rounded-xl bg-emerald-50/95 p-0 ring-1 ring-emerald-900/10 dark:ring-emerald-100/25 sm:p-1.5 ${
+            role="status"
+            aria-live="polite"
+            className="mx-auto mb-2 flex min-h-[1.75rem] max-w-full items-center justify-center text-center text-[11px] font-medium"
+          >
+            {!readOnly && activePowerUp ? (
+              <span className="rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-primary">
+                {activePowerUp === "truth_radar" && pendingAxisTile != null
+                  ? "Now choose Row or Column."
+                  : POWER_UP_ARMED_BANNER[activePowerUp]}
+              </span>
+            ) : null}
+          </div>
+          <div
+            ref={gridContainerRef}
+            className={`relative w-full rounded-xl bg-emerald-50/95 p-0 ring-1 ring-emerald-900/10 dark:ring-emerald-100/25 sm:p-1.5 ${
               flagMode ? "ring-2 ring-amber-400/70" : ""
             }`}
           >
@@ -1627,6 +1748,7 @@ export function UnmaskedBoard({
               return needsFocalTileFromGrid ? (
                 <button
                   key={i}
+                  ref={tileRefSetters[i]}
                   type="button"
                   disabled={status !== "playing"}
                   onClick={() => void handleTileClick(i)}
@@ -1636,7 +1758,12 @@ export function UnmaskedBoard({
                   <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600`}>X</span>
                 </button>
               ) : (
-                <div key={i} className={cls} title={tile.lieText}>
+                <div
+                  key={i}
+                  ref={tileRefSetters[i]}
+                  className={cls}
+                  title={tile.lieText}
+                >
                   <span className={`${isHighlighted ? "animate-bounce" : ""} text-red-600`}>X</span>
                 </div>
               );
@@ -1663,6 +1790,7 @@ export function UnmaskedBoard({
               return needsFocalTileFromGrid ? (
                 <button
                   key={i}
+                  ref={tileRefSetters[i]}
                   type="button"
                   disabled={status !== "playing"}
                   onClick={() => void handleTileClick(i)}
@@ -1676,7 +1804,12 @@ export function UnmaskedBoard({
                   {verseClue}
                 </button>
               ) : (
-                <div key={i} className={cls} title="Passage tile — number shows adjacent lies">
+                <div
+                  key={i}
+                  ref={tileRefSetters[i]}
+                  className={cls}
+                  title="Passage tile — number shows adjacent lies"
+                >
                   <Sparkles
                     className="pointer-events-none absolute right-0.5 top-0.5 z-0 size-2.5 opacity-55 text-white"
                     aria-hidden
@@ -1693,6 +1826,7 @@ export function UnmaskedBoard({
             return needsFocalTileFromGrid ? (
               <button
                 key={i}
+                ref={tileRefSetters[i]}
                 type="button"
                 disabled={status !== "playing"}
                 onClick={() => void handleTileClick(i)}
@@ -1707,7 +1841,11 @@ export function UnmaskedBoard({
                 ) : null}
               </button>
             ) : (
-              <div key={i} className={cls}>
+              <div
+                key={i}
+                ref={tileRefSetters[i]}
+                className={cls}
+              >
                 {tile.adjacentLies > 0 ? (
                   <span
                     className={`text-[0.65rem] font-bold sm:text-xs ${numberColor(tile.adjacentLies)}`}
@@ -1722,6 +1860,7 @@ export function UnmaskedBoard({
           return (
             <button
               key={i}
+              ref={tileRefSetters[i]}
               type="button"
               onClick={() => void handleTileClick(i)}
               onContextMenu={(e) => handleContextMenu(e, i)}
@@ -1760,47 +1899,63 @@ export function UnmaskedBoard({
           );
             })}
           </div>
+          {!readOnly &&
+          activePowerUp === "truth_radar" &&
+          pendingAxisTile != null &&
+          board ? (
+            <TruthRadarChooser
+              anchor={tileRefs.current.get(pendingAxisTile) ?? null}
+              gridContainer={gridContainerRef.current}
+              row={Math.floor(pendingAxisTile / board.gridSize)}
+              col={pendingAxisTile % board.gridSize}
+              gridSize={board.gridSize}
+              onChoose={(axis) => void handleTruthRadarAxis(axis)}
+              onCancel={resetPowerUpIntent}
+            />
+          ) : null}
           </div>
         </div>
       </div>
 
-      {status === "lost" || passagesComplete ? (
-        <div
-          className={`rounded-xl border p-4 text-sm ${
-            passagesComplete
-              ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
-              : "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-100"
-          }`}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="font-semibold">
-                {passagesComplete ? "You finished the full run!" : "Game over."}{" "}
-                <span className="font-normal opacity-80">
-                  {passagesComplete ?
-                    heartClockReductionSeconds > 0 ?
-                      `Actual ${formatTime(rawClockSeconds)} · spare hearts −${formatBonusMinutes(heartClockReductionSeconds)} · final ${formatTime(displayedElapsed)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
-                    : `Time ${formatTime(rawClockSeconds)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
-                  : "All hearts lost. The board above shows what was hidden."}
-                </span>
-              </p>
-            </div>
-            {!readOnly && status === "lost" ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleRetry()}
-                  disabled={retrying}
-                  className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-                >
-                  <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
-                  {retrying ? "Shuffling…" : "New board"}
-                </button>
+      <div className="min-h-[6.5rem] sm:min-h-[5.5rem]">
+        {status === "lost" || passagesComplete ? (
+          <div
+            className={`rounded-xl border p-4 text-sm ${
+              passagesComplete
+                ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
+                : "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-100"
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-semibold">
+                  {passagesComplete ? "You finished the full run!" : "Game over."}{" "}
+                  <span className="font-normal opacity-80">
+                    {passagesComplete ?
+                      heartClockReductionSeconds > 0 ?
+                        `Actual ${formatTime(rawClockSeconds)} · spare hearts −${formatBonusMinutes(heartClockReductionSeconds)} · final ${formatTime(displayedElapsed)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
+                      : `Time ${formatTime(rawClockSeconds)} · ${hearts}/${maxHearts} hearts · ${liesHit} lies hit.`
+                    : "All hearts lost. The board above shows what was hidden."}
+                  </span>
+                </p>
               </div>
-            ) : null}
+              {!readOnly && status === "lost" ? (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleRetry()}
+                    disabled={retrying}
+                    className="ui-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                  >
+                    <RotateCcw className={`size-3.5 ${retrying ? "animate-spin" : ""}`} />
+                    {retrying ? "Shuffling…" : "New board"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {!readOnly && status === "playing" ? (
         <div className="ui-card-muted rounded-xl p-4">
