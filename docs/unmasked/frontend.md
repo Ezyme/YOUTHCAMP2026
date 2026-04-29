@@ -47,7 +47,7 @@ The board layout (seed/gridSize/totalLies/verseFragments) is fetched once on mou
 Two paths:
 
 - **Auto-apply** (`extra_heart`, `shield`): never armed; redemption itself applies. The "Activate" button on inventory is hidden.
-- **Armed** (rest): clicking "Use" sets `armedPowerUp`. The board repaints with a banner ("Scout armed — tap a hidden tile…"). Tapping a tile dispatches `action: "use_powerup"` with the relevant index/axis params. Server reconciles state.
+- **Armed** (rest): clicking "Use" sets `armedPowerUp`. The board repaints with a banner ("Prophetic Vision armed — tap a hidden tile…"). Tapping a tile dispatches `action: "use_powerup"` with the relevant index/axis params. Server reconciles state.
 
 For `truth_radar`, the player taps a tile, then a small floating chooser ("Row" / "Column") pops up anchored next to that tile (`TruthRadarChooser`, defined inline above `UnmaskedBoard`). Edge-flip rules keep it inside the grid wrapper: it appears below for top-row tiles, above otherwise; horizontally aligned to the right of left-edge tiles, to the left of right-edge tiles, centered otherwise. Picking an axis dispatches `handleTruthRadarAxis(axis)` and both inputs hit the server in one POST. Escape or a click outside the grid cancels.
 
@@ -86,5 +86,5 @@ Written after every successful reveal/flag/power-up/redeem/verse-check. Cleared 
 `showError` / `showSuccess` from [`lib/ui/toast.ts`](../../lib/ui/toast.ts). The component uses them for:
 - Wrong code (`Invalid code`, `Code not for your team`)
 - Wrong verse check (with reference clue in description)
-- Power-up not available (e.g. arming Scout when no hidden tiles)
+- Power-up not available (e.g. arming Prophetic Vision when no hidden tiles)
 - Game over / win moments

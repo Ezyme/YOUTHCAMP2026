@@ -81,18 +81,18 @@ type PersistedState = {
 const LIVE_PLAY_MS = 12_000;
 
 const POWER_UP_LABELS: Record<PowerUpType, { label: string; icon: typeof Shield }> = {
-  extra_heart: { label: "Extra Heart", icon: Heart },
-  reveal: { label: "Reveal", icon: Sparkles },
-  scout: { label: "Scout", icon: Search },
-  shield: { label: "Shield", icon: Shield },
-  safe_opening: { label: "Safe opening", icon: Expand },
-  truth_radar: { label: "Truth Radar", icon: Crosshair },
-  lie_pin: { label: "Lie Pin", icon: Flag },
-  verse_compass: { label: "Verse Compass", icon: Compass },
-  gentle_step: { label: "Gentle Step", icon: Footprints },
+  extra_heart: { label: "Abundant Grace", icon: Heart },
+  reveal: { label: "Glimmer of Hope", icon: Sparkles },
+  scout: { label: "Prophetic Vision", icon: Search },
+  shield: { label: "Armor of Truth", icon: Shield },
+  safe_opening: { label: "Divine Blueprint", icon: Expand },
+  truth_radar: { label: "Light of Discernment", icon: Crosshair },
+  lie_pin: { label: "Exposing the Dark", icon: Flag },
+  verse_compass: { label: "Living Word", icon: Compass },
+  gentle_step: { label: "Steadfast Path", icon: Footprints },
 };
 
-/** Scout peek kind as shown in UI / toasts (tile is still hidden). */
+/** Prophetic Vision peek kind as shown in UI / toasts (tile is still hidden). */
 function formatScoutPeekKind(kind: string): string {
   switch (kind) {
     case "lie":
@@ -319,7 +319,7 @@ function TruthRadarChooser({
     <div
       ref={cardRef}
       role="dialog"
-      aria-label="Truth Radar axis"
+      aria-label="Light of Discernment axis"
       className="absolute z-30 flex items-center gap-1 rounded-md border border-primary/40 bg-background/95 px-1.5 py-1 shadow-md backdrop-blur"
       style={{ top: pos.top, left: pos.left }}
     >
@@ -464,13 +464,13 @@ export function UnmaskedBoard({
     setTipPowerUp(null);
   }, []);
 
-  const startPowerUpTip = useCallback((type: PowerUpType) => {
+  const startPowerUpTip = useCallback((type: PowerUpType, delay = 450) => {
     if (tipTimer.current) clearTimeout(tipTimer.current);
     tipTimer.current = setTimeout(() => {
       setTipPowerUp(type);
       // Auto-dismiss the tooltip after a moment so it never sticks around.
       tipTimer.current = setTimeout(() => setTipPowerUp(null), 3000);
-    }, 450);
+    }, delay);
   }, []);
 
   const flashTiles = useCallback(
@@ -1068,7 +1068,7 @@ export function UnmaskedBoard({
 
     if (activePowerUp === "truth_radar") {
       setPendingAxisTile(index);
-      showPowerUpMessage("Truth Radar locked on. Choose Row or Column.");
+      showPowerUpMessage("Light of Discernment locked on. Choose Row or Column.");
       return;
     }
 
@@ -1077,7 +1077,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Verse Compass fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Living Word fizzled.", 4200);
         return;
       }
       const hits = Array.isArray(result.revealedIndices) ? result.revealedIndices : [];
@@ -1085,8 +1085,8 @@ export function UnmaskedBoard({
         flashTiles(hits, "verse_compass", 2200);
         showPowerUpMessage(
           hits.length === 1 ?
-            "Verse Compass revealed 1 nearby fragment."
-          : "Verse Compass revealed 2 nearby fragments.",
+            "Living Word revealed 1 nearby fragment."
+          : "Living Word revealed 2 nearby fragments.",
           2800,
         );
       }
@@ -1098,7 +1098,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Lie Pin fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Exposing the Dark fizzled.", 4200);
         return;
       }
       if (typeof result.flaggedIndex === "number") {
@@ -1113,7 +1113,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Gentle Step fizzled.", 4200);
+        showPowerUpMessage(result.reason ?? "Steadfast Path fizzled.", 4200);
         return;
       }
       if (result.revealedIndex != null) {
@@ -1128,7 +1128,7 @@ export function UnmaskedBoard({
       resetPowerUpIntent();
       if (!result) return;
       if (result.success === false) {
-        showPowerUpMessage(result.reason ?? "Scout fizzled.", 4000);
+        showPowerUpMessage(result.reason ?? "Prophetic Vision fizzled.", 4000);
         return;
       }
       if (result.peekedIndex != null) {
@@ -1168,9 +1168,9 @@ export function UnmaskedBoard({
     if (result.type === "lie") {
       const quoted = `“${result.text}”`;
       if (result.shieldUsed) {
-        showSuccess(`Shield blocked: ${quoted}`, {
+        showSuccess(`Armor of Truth blocked: ${quoted}`, {
           duration: 4000,
-          description: "Your shield protected you — no heart lost!",
+          description: "Your Armor of Truth protected you — no heart lost!",
         });
       } else {
         showWarning(`Lie revealed: ${quoted}`, {
@@ -1239,13 +1239,13 @@ export function UnmaskedBoard({
       setActivePowerUp((prev) => (prev === type ? null : type));
       setPendingAxisTile(null);
       if (type === "truth_radar") {
-        showPowerUpMessage("Truth Radar armed — tap a tile first, then choose Row or Column.");
+        showPowerUpMessage("Light of Discernment armed — tap a tile first, then choose Row or Column.");
       } else if (type === "verse_compass") {
-        showPowerUpMessage("Verse Compass armed — tap an anchor tile.");
+        showPowerUpMessage("Living Word armed — tap an anchor tile.");
       } else if (type === "lie_pin") {
-        showPowerUpMessage("Lie Pin armed — tap a focal tile (nearest hidden lie is pinned).");
+        showPowerUpMessage("Exposing the Dark armed — tap a focal tile (nearest hidden lie is pinned).");
       } else if (type === "gentle_step") {
-        showPowerUpMessage("Gentle Step armed — tap a focal tile (nearest safe opens).");
+        showPowerUpMessage("Steadfast Path armed — tap a focal tile (nearest safe opens).");
       }
       return;
     }
@@ -1260,7 +1260,7 @@ export function UnmaskedBoard({
       return;
     }
     if (type === "shield") {
-      showPowerUpMessage("Shield up — your next lie is blocked.", 2600);
+      showPowerUpMessage("Armor of Truth up — your next lie is blocked.", 2600);
       return;
     }
     if (type === "reveal" && result.revealedIndex != null) {
@@ -1270,7 +1270,7 @@ export function UnmaskedBoard({
     }
     if (type === "safe_opening" && typeof result.openingSize === "number") {
       flashTiles(result.revealedIndex != null ? [result.revealedIndex] : [], "safe_opening", 2200);
-      showPowerUpMessage(`Safe opening cleared ${result.openingSize} tiles!`, 3400);
+      showPowerUpMessage(`Divine Blueprint cleared ${result.openingSize} tiles!`, 3400);
       return;
     }
   }
@@ -1282,14 +1282,14 @@ export function UnmaskedBoard({
     resetPowerUpIntent();
     if (!result) return;
     if (result.success === false) {
-      showPowerUpMessage(result.reason ?? "Truth Radar fizzled.", 4200);
+      showPowerUpMessage(result.reason ?? "Light of Discernment fizzled.", 4200);
       return;
     }
     const revealedIndices = Array.isArray(result.revealedIndices) ? result.revealedIndices : [];
     if (revealedIndices.length > 0) {
       flashTiles([origin, ...revealedIndices], "truth_radar", 2400);
       showSuccess(
-        `Truth Radar revealed ${revealedIndices.length} truth${revealedIndices.length === 1 ? "" : "s"} on that ${axis}.`,
+        `Light of Discernment revealed ${revealedIndices.length} truth${revealedIndices.length === 1 ? "" : "s"} on that ${axis}.`,
       );
     } else {
       showInfo(`No hidden truths were left on that ${axis}.`);
@@ -1567,17 +1567,17 @@ export function UnmaskedBoard({
             <>
               <span className="text-xs text-primary">
                 {activePowerUp === "scout" ?
-                  "Scout armed — tap a hidden tile to peek."
+                  "Prophetic Vision armed — tap a hidden tile to peek."
                 : activePowerUp === "truth_radar" && pendingAxisTile == null ?
-                  "Truth Radar armed — tap a tile first."
+                  "Light of Discernment armed — tap a tile first."
                 : activePowerUp === "truth_radar" ?
-                  "Truth Radar locked — now choose Row or Column."
+                  "Light of Discernment locked — now choose Row or Column."
                 : activePowerUp === "verse_compass" ?
-                  "Verse Compass armed — tap an anchor tile."
+                  "Living Word armed — tap an anchor tile."
                 : activePowerUp === "lie_pin" ?
-                  "Lie Pin armed — tap your focal tile."
+                  "Exposing the Dark armed — tap your focal tile."
                 : activePowerUp === "gentle_step" ?
-                  "Gentle Step armed — tap your focal tile."
+                  "Steadfast Path armed — tap your focal tile."
                 : `Tap a tile to use ${POWER_UP_LABELS[activePowerUp]?.label}`}
               </span>
               <button
@@ -1606,7 +1606,7 @@ export function UnmaskedBoard({
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-foreground">Power-ups</p>
               {!readOnly ? (
-                <span className="text-[11px] text-muted-foreground">Long-press for tip</span>
+                <span className="text-[11px] text-muted-foreground">Hover or hold for tip</span>
               ) : (
                 <span className="text-[11px] text-muted-foreground">Inventory</span>
               )}
@@ -1631,10 +1631,14 @@ export function UnmaskedBoard({
                       <button
                         type="button"
                         onClick={() => isReady && void handleUsePowerUp(type)}
+                        onMouseEnter={() => startPowerUpTip(type, 180)}
+                        onMouseLeave={cancelPowerUpTip}
                         onPointerDown={() => startPowerUpTip(type)}
                         onPointerUp={cancelPowerUpTip}
                         onPointerLeave={cancelPowerUpTip}
                         onPointerCancel={cancelPowerUpTip}
+                        onFocus={() => startPowerUpTip(type, 180)}
+                        onBlur={cancelPowerUpTip}
                         disabled={!isReady}
                         className={`relative flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-[11px] leading-tight transition ${
                           isActive ?
